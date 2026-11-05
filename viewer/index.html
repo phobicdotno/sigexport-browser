@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="color-scheme" content="dark light">
+<title>Chats</title>
+<link rel="stylesheet" href="viewer.css">
+<link rel="stylesheet" href="themes/theme-local.css">
+<script src="config.js"></script>
+</head><body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+ <symbol id="i-search" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5" fill="none" stroke="currentColor" stroke-width="2"/><path d="M15.5 15.5 21 21" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+ <symbol id="i-more" viewBox="0 0 24 24"><circle cx="12" cy="5" r="2" fill="currentColor"/><circle cx="12" cy="12" r="2" fill="currentColor"/><circle cx="12" cy="19" r="2" fill="currentColor"/></symbol>
+ <symbol id="i-back" viewBox="0 0 24 24"><path d="M20 12H5m6-7-7 7 7 7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+ <symbol id="i-chat" viewBox="0 0 24 24"><path d="M12 3.5c-5 0-9 3.4-9 7.8 0 2.3 1.1 4.3 2.9 5.7L5 21l4.3-2.2c.9.2 1.8.3 2.7.3 5 0 9-3.4 9-7.8s-4-7.8-9-7.8z" fill="currentColor"/></symbol>
+ <symbol id="i-group" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="8" cy="7.5" r="3"/><circle cx="16" cy="7.5" r="3"/><path d="M2.5 19.5c0-3 2.5-5.5 5.5-5.5s5.5 2.5 5.5 5.5zM13.5 19.5h8c0-3-2.5-5.5-5.5-5.5-1.2 0-2.3.4-3.2 1"/></g></symbol>
+ <symbol id="i-x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+ <symbol id="i-fs" viewBox="0 0 24 24"><path d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+ <symbol id="i-left" viewBox="0 0 24 24"><path d="m15 5-7 7 7 7" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+ <symbol id="i-right" viewBox="0 0 24 24"><path d="m9 5 7 7-7 7" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+ <symbol id="i-up" viewBox="0 0 24 24"><path d="m6 15 6-6 6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+ <symbol id="i-down" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+ <symbol id="i-read" viewBox="0 0 26 16"><circle cx="8" cy="8" r="7" fill="currentColor" opacity=".55"/><circle cx="17" cy="8" r="7.6" fill="currentColor"/><path d="m13.6 8.2 2.4 2.4 4.4-4.8" fill="none" stroke="var(--chk)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+</svg>
+<div id="app">
+  <aside id="side">
+    <header class="bar side-head">
+      <div id="meav" class="avatar me av4">C</div>
+      <h1 id="apptitle">Chats</h1>
+      <button id="lsearch" class="ib" data-i18n-title="search"><svg><use href="#i-search"/></svg></button>
+          </header>
+    <div id="lfilter" class="searchrow" hidden><input id="chatfilter" data-i18n-ph="search" type="search" autocomplete="off"></div>
+    <div id="gsearch" class="gsearch" hidden>
+      <div class="searchrow"><input id="gq" type="search" data-i18n-ph="gsearch" autocomplete="off"></div>
+      <div class="gfilt">
+        <select id="gchat" data-i18n-title="chatF"><option value="" data-i18n="chatF"></option></select>
+        <input id="gsender" type="search" data-i18n-ph="sender" autocomplete="off">
+        <select id="gtype"><option value="0" data-i18n="all"></option><option value="1" data-i18n="images"></option><option value="2" data-i18n="video"></option><option value="4" data-i18n="audio"></option><option value="8" data-i18n="files"></option><option value="16" data-i18n="links"></option></select>
+        <label><span data-i18n="from"></span> <input id="gfrom" type="date"></label>
+        <label><span data-i18n="to"></span> <input id="gto" type="date"></label>
+        <select id="gsort"><option value="new" data-i18n="newest"></option><option value="old" data-i18n="oldest"></option><option value="rel" data-i18n="relevance"></option></select>
+      </div>
+      <div id="gcount" class="gcount"></div>
+      <div id="gres" class="gres"></div>
+    </div>
+    <div id="chatlist"></div>
+  </aside>
+  <main id="main">
+    <div id="empty" class="empty"><span data-i18n="pick"></span><br><small data-i18n="pickHint"></small></div>
+    <section id="chat" hidden>
+      <header class="bar chat-head">
+        <button id="back" class="ib" data-i18n-title="back"><svg><use href="#i-back"/></svg></button>
+        <button id="backres" class="pillbtn" data-i18n="backRes" hidden></button>
+        <div id="hav" class="avatar"></div>
+        <div class="htext"><div id="htitle"></div><div id="hsub"></div></div>
+        <button id="csearch" class="ib" data-i18n-title="searchChat"><svg><use href="#i-search"/></svg></button>
+        <button id="cmore" class="ib" data-i18n-title="media"><svg><use href="#i-more"/></svg></button>
+      </header>
+      <div id="tools" class="tools" hidden>
+        <input id="search" type="search" data-i18n-ph="searchChat" autocomplete="off">
+        <span id="scount"></span>
+        <button id="sprev" class="ib sm" data-i18n-title="prevHit"><svg><use href="#i-up"/></svg></button><button id="snext" class="ib sm" data-i18n-title="nextHit"><svg><use href="#i-down"/></svg></button>
+      </div>
+      <div class="tabs"><button id="tabmsg" class="tab on" data-i18n="messages"></button><button id="tabmedia" class="tab" data-i18n="media"></button></div>
+      <div id="msgs"></div>
+      <div id="mzoom" class="mzoom" hidden>
+        <span data-i18n="zoom"></span>
+        <button id="zout" class="ib sm" data-i18n-title="smaller">&minus;</button>
+        <input id="zrange" type="range" min="60" max="320" step="10" value="140">
+        <button id="zin" class="ib sm" data-i18n-title="larger">+</button>
+      </div>
+      <div id="mediagrid" hidden></div>
+      <footer class="rofoot" data-i18n="readonly"></footer>
+    </section>
+  </main>
+</div>
+<div id="lb" hidden>
+  <div id="lbbg"></div>
+  <div id="lbstage"></div>
+  <div id="lbtop">
+    <button id="lbclose" data-i18n-title="close"><svg><use href="#i-back"/></svg></button>
+    <div id="lbcap"><b></b><small></small></div>
+    <button id="lbfs" data-i18n-title="fullscreen"><svg><use href="#i-fs"/></svg></button>
+  </div>
+  <button id="lbprev" class="nav" data-i18n-title="prev"><svg><use href="#i-left"/></svg></button>
+  <button id="lbnext" class="nav" data-i18n-title="next"><svg><use href="#i-right"/></svg></button>
+  <div id="lbcount"></div>
+</div>
+<script src="index_data.js"></script>
+<script>window.CHATS=window.CHATS||{};</script>
+<script src="viewer.js"></script>
+</body></html>

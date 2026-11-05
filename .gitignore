@@ -1,0 +1,20 @@
+# personal / generated - never commit
+viewer/config.js
+viewer/themes/theme-local.css
+viewer/index_data.js
+viewer/data/
+viewer/search/
+__pycache__/
+*.pyc
+.DS_Store
+# pipeline state and export output
+_state/
+_src/
+SignalExport/
+*.log
+manifest*.csv
+media_index*.tsv
+done.txt
+failed.txt
+chats.txt
+*.pid
