@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.1.16 (build 9) — 2026-11-06
+- pipeline/export_all.py: cross-platform (macOS, Linux, Windows) stdlib Python port of export_all.sh with the same env vars/flags, resume, manifest, dedup, link check, rclone copy + one-way check, disk guards and per-chat timeouts; keep-awake via caffeinate / systemd-inhibit / SetThreadExecutionState; Signal folder auto-detected per OS (incl. Flatpak and Snap)
+- pipeline/prepare_source.py: cross-platform port; also copies "Local State" (needed for Windows DPAPI key), falls back to directory junctions on Windows; the .sh files are now thin wrappers
+- Duplicate-name fix: chats.txt names are unique, folders.tsv records which folders each export produced, collisions.tsv reports names matching several chats, the same chat exported twice, comma names and Windows-illegal folder names
+- dedup.py: links always written with forward slashes and Windows ./media\ links accepted and normalised; new unittest suite pipeline/tests/test_pipeline.py (synthetic data)
+
 ## v0.1.12 (build 8) — 2026-11-06
 - CI actions pinned to checkout v7.0.1 and setup-python v7.1.0 (Node 24; clears the Node 20 deprecation warning)
 

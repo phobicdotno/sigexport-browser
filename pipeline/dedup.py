@@ -26,25 +26,33 @@ def chat_dirs(base):
 def load_index(p):
     idx = {}
     if os.path.exists(p):
-        for line in open(p, encoding='utf8'):
+        for line in open(p, encoding='utf-8'):
             line = line.rstrip('\n')
             if '\t' in line:
                 m, path = line.split('\t', 1)
                 idx.setdefault(m, path)
     return idx
 
-MD_RE = re.compile(r'(\]\()\./media/([^\n]*?)(\))(?=[ \t]*(?:\n|$|!?\[))')
-HT_RE = re.compile(r'((?:src|href)=")\./media/([^"]*)(")')
-JS_RE = re.compile(r'("path": ")media/((?:[^"\\]|\\.)*)(")')
+# sigexport builds attachment paths with pathlib (create.py: Path("media") / file_name), so on
+# Windows they come out as ./media\file (JSON: media\\file). Accept both separators and always
+# write forward slashes back.
+MD_RE = re.compile(r'(\]\()\./media[/\\]([^\n]*?)(\))(?=[ \t]*(?:\n|$|!?\[))')
+HT_RE = re.compile(r'((?:src|href)=")\./media[/\\]([^"]*)(")')
+JS_RE = re.compile(r'("path": ")media(?:/|\\\\)((?:[^"\\]|\\.)*)(")')
+PREFIX = {'md': './media/', 'html': './media/', 'json': 'media/'}
+
+def posix_rel(path, start):
+    """Relative path with forward slashes on every OS (links never use os.sep)."""
+    return os.path.relpath(path, start).replace(os.sep, '/')
 
 def atomic_write(p, s):
     t = p + '.tmpw'
-    with open(t, 'w', encoding='utf8', newline='') as f:
+    with open(t, 'w', encoding='utf-8', newline='') as f:
         f.write(s)
     os.replace(t, p)
 
 def rd(p):
-    with open(p, encoding='utf8', newline='') as f:
+    with open(p, encoding='utf-8', newline='') as f:
         return f.read()
 
 def main():
@@ -59,7 +67,7 @@ def main():
     newentries = []
     verified = {}
     for cd in chat_dirs(base):
-        rel = os.path.relpath(cd, root)
+        rel = posix_rel(cd, root)
         mdir = os.path.join(cd, 'media')
         mapping = {}  # file name -> new relative ref (from cd)
         files = sorted(os.listdir(mdir)) if os.path.isdir(mdir) else []
@@ -91,7 +99,7 @@ def main():
                 stats['errors'].append('first copy missing/mismatch for index entry')
                 stats['kept'] += size
                 continue
-            newrel = os.path.relpath(fp, cd)
+            newrel = posix_rel(fp, cd)
             if not newrel.startswith('.'):
                 newrel = './' + newrel
             mapping[fn] = (newrel, p, size)
@@ -107,7 +115,8 @@ def main():
                     name = json.loads('"' + name + '"')
                 ent = mapping.get(name)
                 if not ent:
-                    return mo.group(0)
+                    # keep the name exactly as written, only normalise the separator
+                    return mo.group(1) + PREFIX[counter] + mo.group(2) + mo.group(3)
                 stats['repl_' + counter] += 1
                 nr = ent[0]
                 if counter == 'html':
@@ -118,7 +127,7 @@ def main():
                     return mo.group(1) + nr + mo.group(3)
                 return mo.group(1) + nr + mo.group(3)
             return cb
-        if mapping:
+        if True:  # always run: also normalises Windows separators to '/'
             for fname, rx, key in (('chat.md', MD_RE, 'md'), ('index.html', HT_RE, 'html'), ('data.json', JS_RE, 'json')):
                 fp = os.path.join(cd, fname)
                 if not os.path.exists(fp):
@@ -143,7 +152,7 @@ def main():
         pass
     stats['newentries'] = len(newentries)
     if not dry:
-        with open(indexp, 'a', encoding='utf8') as f:
+        with open(indexp, 'a', encoding='utf-8') as f:
             for m, p in newentries:
                 f.write(m + '\t' + p + '\n')
     print(json.dumps(stats))
@@ -159,7 +168,7 @@ def record_present(base, root, indexp, idxdir, dry):
     pres = {}
     for cd in chat_dirs(base):
         mdir = os.path.join(cd, 'media')
-        pres[os.path.relpath(cd, root)] = sorted(os.listdir(mdir)) if os.path.isdir(mdir) else []
+        pres[posix_rel(cd, root)] = sorted(os.listdir(mdir)) if os.path.isdir(mdir) else []
     os.makedirs(os.path.dirname(pp), exist_ok=True)
     atomic_write(pp, json.dumps(pres, ensure_ascii=False))
 
@@ -188,7 +197,7 @@ def linkcheck(root, base, indexp=None, idxdir=None):
         pres = json.loads(rd(present_path(indexp, idxdir)))
     for cd in chat_dirs(base):
         kinds += reported_missing_kinds(cd)
-        rel = os.path.relpath(cd, root)
+        rel = posix_rel(cd, root)
         had = set(pres.get(rel, [])) if pres is not None else None
         for fname, rx, key in (('chat.md', MD_RE2, 'md'), ('index.html', HT_RE2, 'html'), ('data.json', JS_RE2, 'json')):
             fp = os.path.join(cd, fname)
@@ -201,6 +210,7 @@ def linkcheck(root, base, indexp=None, idxdir=None):
                     ref = html.unescape(ref)
                 elif key == 'json':
                     ref = json.loads('"' + ref + '"')
+                ref = ref.replace('\\', '/')
                 if not re.search(r'(^|/)media/', ref):
                     continue
                 total += 1
@@ -216,11 +226,11 @@ def linkcheck(root, base, indexp=None, idxdir=None):
                missing_files=len(reported), missing_kind=kinds)
     lg = os.environ.get('LC_SIGLOG')
     if lg and os.path.exists(lg):
-        out['no_file_lines'] = sum(1 for l in open(lg, encoding='utf8', errors='replace') if 'No file to copy' in l)
+        out['no_file_lines'] = sum(1 for l in open(lg, encoding='utf-8', errors='replace') if 'No file to copy' in l)
     print(json.dumps(out))
     return 0 if missing == 0 else 1
 
-MD_RE2 = re.compile(r'\]\((\.{1,2}/[^\n]*?)\)(?=[ \t]*(?:\n|$|!?\[))')
+MD_RE2 = re.compile(r'\]\((\.{1,2}[/\\][^\n]*?)\)(?=[ \t]*(?:\n|$|!?\[))')
 HT_RE2 = re.compile(r'(?:src|href)="([^"]*)"')
 JS_RE2 = re.compile(r'"path": "((?:[^"\\]|\\.)*)"')
 
