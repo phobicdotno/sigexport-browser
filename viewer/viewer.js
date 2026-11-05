@@ -123,6 +123,9 @@ function thumb(a,idx,over){
     th.appendChild(m);th.appendChild(el('div','play','▶'));
   }else{m=document.createElement('img');m.loading='lazy';m.decoding='async';m.src=a.path;m.alt=''}
   m.onerror=function(){placeholder(th,a.name)};
+  // single media: once real dimensions are known, size the box to the media's own aspect ratio (no grey filler)
+  var fit=function(){var w=m.naturalWidth||m.videoWidth,h=m.naturalHeight||m.videoHeight;if(w&&h){th.style.aspectRatio=w+'/'+h;th.classList.add('ld')}};
+  if(a.type==='video')m.addEventListener('loadedmetadata',fit);else{m.addEventListener('load',fit);if(m.complete)fit()}
   if(a.type!=='video')th.appendChild(m);
   if(over)th.appendChild(el('div','more','+'+over));
   th.onclick=function(){openLB(idx)};
@@ -452,4 +455,36 @@ window.addEventListener('keydown',function(e){if(e.key!=='Escape')return;
   home()},true);
 window.__home=home;
 window.__openChat=openChat;window.__search=function(v){tools(true,true);$('search').value=v;doSearch()};window.__openLB=openLB;
+
+// ---- auto-refresh after a rebuild: poll build_stamp.js via a <script> tag (fetch is blocked on file://).
+// On change: save chat/scroll/tab/query to sessionStorage and reload; never while the lightbox,
+// fullscreen or a text field is in use (retried on every poll until idle).
+var STAMP0=window.__BUILD_STAMP||null,stale=false;
+function busy(){var a=document.activeElement;return !$('lb').hidden||!!document.fullscreenElement||!!(a&&/^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName))}
+function saveState(){var b=$('msgs'),st={t:Date.now()};
+  if(chat&&!$('chat').hidden){st.id=chat.id;st.name=chat.name;st.inchat=document.body.classList.contains('inchat');
+    st.tab=$('msgs').hidden?'media':'msg';st.tools=$('chat').classList.contains('toolsopen');st.q=$('search').value;st.mgs=$('mediagrid').scrollTop;
+    st.bottom=end>=msgs.length&&b.scrollTop+b.clientHeight>b.scrollHeight-40;
+    if(!st.bottom){var top=b.getBoundingClientRect().top,rows=b.querySelectorAll('.row[id],.sys[id],[id^="m"]');
+      for(var i=0;i<rows.length;i++){if(!/^m\d+$/.test(rows[i].id))continue;var r=rows[i].getBoundingClientRect();if(r.bottom>top){st.mi=+rows[i].id.slice(1);st.off=r.top-top;break}}
+      st.start=start}}
+  try{sessionStorage.setItem('sb.refresh',JSON.stringify(st))}catch(e){}}
+function tryRefresh(){if(stale&&!busy()){saveState();location.reload()}}
+function pollStamp(){var s=document.createElement('script');s.src='build_stamp.js?t='+Date.now();
+  s.onload=s.onerror=function(){s.remove();var v=window.__BUILD_STAMP;if(v){if(STAMP0==null)STAMP0=v;else if(v!==STAMP0)stale=true}tryRefresh()};
+  document.head.appendChild(s)}
+setInterval(pollStamp,30000);
+function restoreState(){var st=null;try{st=JSON.parse(sessionStorage.getItem('sb.refresh')||'null');sessionStorage.removeItem('sb.refresh')}catch(e){}
+  if(!st||Date.now()-st.t>120000||st.id==null)return;
+  var id=null;INDEX.forEach(function(c){if(id==null&&c.name===st.name)id=c.id});
+  if(id==null)return;openChat(id);
+  (function w(){if(!chat||chat.id!==id)return setTimeout(w,50);
+    if(!st.inchat)document.body.classList.remove('inchat');
+    if(st.tools||st.q){tools(true,!!st.q);if(st.q){$('search').value=st.q;$('search').blur()}}
+    if(st.tab==='media'){tools(true,false);showTab('media');$('mediagrid').scrollTop=st.mgs||0}
+    else if(!st.bottom&&st.mi!=null&&st.mi<msgs.length){
+      stick=0;start=Math.max(0,Math.min(st.start||0,st.mi));end=Math.min(msgs.length,Math.max(st.mi+150,start+CHUNK));renderMsgs(false);
+      var b=$('msgs'),e=$('m'+st.mi);if(e)b.scrollTop+=e.getBoundingClientRect().top-b.getBoundingClientRect().top-(st.off||0)}
+  })()}
+if(!q)restoreState();
 })();

@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.1.11 (build 7) — 2026-11-06
+- Auto-refresh: the build writes build_stamp.js last; an open viewer tab polls it every 30 s and reloads itself after a rebuild, keeping the open chat, scroll position (or bottom), media tab and search text; it waits while the lightbox, fullscreen or a text field is in use
+
+## v0.1.10 (build 6) — 2026-11-06
+- Single photos and videos in a bubble now take the media's real aspect ratio (80px to 60vh tall, cropped rather than padded), so wide screenshots no longer sit on top of a grey filler box
+
 ## v0.1.9 (build 5) — 2026-11-06
 - build_viewer.py is portable: pathlib, utf-8 with LF output, media URLs always '/'-separated and percent-encoded (also for '\\' paths from sigexport), file:// URI fallback across Windows drives, long-path support on Windows
 - build_viewer.py writes data.new/ and search.new/ and swaps them in (works on Windows, where a dir cannot be renamed over another), index_data.js via os.replace; viewer-folder check works on case-insensitive filesystems
