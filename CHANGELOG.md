@@ -1,5 +1,8 @@
 # Changelog
 
+## v0.1.5 (build 4) — 2026-11-05
+- README screenshots resized into a consistent grid (fixed sizes, click for full resolution)
+
 ## v0.1.4 (build 3) — 2026-11-05
 - Home reset: clicking the app title or avatar (or Esc with nothing open) closes searches, media tab, lightbox and popovers and returns every chat to its newest messages
 - Link check ignores attachments that sigexport reported missing at export time; new manifest column missing_reported

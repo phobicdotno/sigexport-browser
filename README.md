@@ -6,7 +6,7 @@ Everyone has experienced the insanely big Signal Desktop folder, but nobody want
 
 sigexport-browser exports every chat, removes duplicate media (a video forwarded to ten chats is stored once and linked from the other nine), verifies every file by hash, and gives you a fast offline chat browser with search and a media gallery.
 
-![Chat view](docs/screenshots/wide_chat.png)
+<p align="center"><a href="docs/screenshots/wide_chat.png"><img src="docs/screenshots/wide_chat.png" width="640" alt="Chat view: chat list on the left, message thread with bubbles and reactions on the right"></a></p>
 
 ## Real-world result (one user, anonymized)
 
@@ -64,11 +64,20 @@ What changes:
 - Keychain-block guard: it stops cleanly if sigexport hangs on the Keychain prompt
 - manifest CSV with per-chat media counts, bytes saved, upload and check status
 
-| | |
-|---|---|
-| ![Media grid](docs/screenshots/wide_media.png) | ![Global search](docs/screenshots/global_desktop.png) |
-| ![Lightbox](docs/screenshots/lightbox.png) | ![Search filters](docs/screenshots/global_filters.png) |
-| ![Who reacted](docs/screenshots/reactions.png) | ![Chat list (phone)](docs/screenshots/list.png) |
+<table>
+<tr>
+<td align="center"><a href="docs/screenshots/wide_media.png"><img src="docs/screenshots/wide_media.png" width="400" alt="Media gallery: square thumbnail grid with zoom slider"></a></td>
+<td align="center"><a href="docs/screenshots/reactions.png"><img src="docs/screenshots/reactions.png" width="400" alt="Reaction popover showing who reacted with which emoji"></a></td>
+</tr>
+<tr>
+<td align="center"><a href="docs/screenshots/global_desktop.png"><img src="docs/screenshots/global_desktop.png" width="400" alt="Global search across all chats with results list"></a></td>
+<td align="center"><a href="docs/screenshots/global_filters.png"><img src="docs/screenshots/global_filters.png" width="400" alt="Global search with the filter options open"></a></td>
+</tr>
+<tr>
+<td align="center"><a href="docs/screenshots/lightbox.png"><img src="docs/screenshots/lightbox.png" width="280" alt="Fullscreen lightbox on phone with previous/next arrows"></a></td>
+<td align="center"><a href="docs/screenshots/list.png"><img src="docs/screenshots/list.png" width="280" alt="Chat list on phone"></a></td>
+</tr>
+</table>
 
 All screenshots use synthetic test data.
 
