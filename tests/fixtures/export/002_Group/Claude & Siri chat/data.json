@@ -1,0 +1,3 @@
+{"date": "2026-01-02T09:00:00", "sender": "Claude", "body": "Group hello", "attachments": []}
+{"date": "2026-01-02T09:01:00", "sender": "Siri", "body": "Voice note", "quote": "> Group hello", "attachments": [{"name": "voice æøå.ogg", "path": "media/voice æøå.ogg"}]}
+{"date": "2026-01-02T09:02:00", "sender": "Me", "body": "Ok", "attachments": []}

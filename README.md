@@ -1,5 +1,7 @@
 # sigexport-browser
 
+[![CI](https://github.com/phobicdotno/sigexport-browser/actions/workflows/ci.yml/badge.svg)](https://github.com/phobicdotno/sigexport-browser/actions/workflows/ci.yml)
+
 Offline browser and deduplicated export pipeline for Signal Desktop chats (built on sigexport).
 
 Everyone has experienced the insanely big Signal Desktop folder, but nobody wants to nuke their chat history. Now you can — without losing anything.
@@ -118,6 +120,70 @@ open ~/SignalExport/viewer/index.html
 Settings: `SIGNAL_SRC`, `OUT_DIR` (default `~/SignalExport`), `REMOTE` (empty means no upload), `MIN_FREE_GIB` (6), `ABORT_FREE_GIB` (4), `TRANSFERS` (2), `SIGEXPORT`, `STATE_DIR`. Each one can also be passed as a flag; see `pipeline/export_all.sh --help`.
 
 To personalise the viewer, copy `viewer/config.example.js` to `viewer/config.js`. See `viewer/themes/README.md` for themes.
+
+## Install and usage per OS
+
+The viewer build (`viewer/build_viewer.py`) is plain Python 3.10+ with no dependencies and is tested in CI on Linux, Windows and macOS. The shell pipeline above is macOS-first; on Linux and Windows run `sigexport` directly (or the pipeline once it supports your OS) and then build the viewer.
+
+Signal Desktop data folder (pass it to `sigexport --source`):
+
+| OS | Signal Desktop folder |
+|---|---|
+| macOS | `~/Library/Application Support/Signal` |
+| Linux (deb/rpm/AUR) | `~/.config/Signal` |
+| Linux (Flatpak) | `~/.var/app/org.signal.Signal/config/Signal` |
+| Linux (Snap) | `~/snap/signal-desktop/current/.config/Signal` |
+| Windows | `%APPDATA%\Signal` (`$env:APPDATA\Signal` in PowerShell) |
+
+Quit Signal Desktop before exporting, and work on a copy of that folder if you can.
+
+### macOS
+
+```sh
+brew install pipx rclone          # rclone only if you upload
+pipx install --python python3.13 signal-export==3.9.3
+# export with the pipeline (Quick start above), then:
+python3 ~/SignalExport/viewer/build_viewer.py
+open ~/SignalExport/viewer/index.html
+```
+
+### Linux
+
+```sh
+sudo apt install pipx rclone      # or dnf / pacman; rclone is optional
+pipx install signal-export==3.9.3
+SRC=~/.config/Signal              # Flatpak / Snap: see the table above
+sigexport --source "$SRC" ~/SignalExport/001_all
+cp -R viewer ~/SignalExport/viewer
+python3 ~/SignalExport/viewer/build_viewer.py
+xdg-open ~/SignalExport/viewer/index.html
+```
+
+On Linux, `sigexport` reads the database key from the desktop keyring (GNOME Keyring / KWallet). Unlock it first.
+
+### Windows (PowerShell)
+
+```powershell
+winget install Python.Python.3.13 Rclone.Rclone   # rclone is optional
+py -m pip install --user pipx; py -m pipx ensurepath   # then open a new terminal
+pipx install signal-export==3.9.3
+sigexport --source "$env:APPDATA\Signal" "$HOME\SignalExport\001_all"
+Copy-Item -Recurse viewer "$HOME\SignalExport\viewer"
+py "$HOME\SignalExport\viewer\build_viewer.py"
+Start-Process "$HOME\SignalExport\viewer\index.html"
+```
+
+Keep the export folder short (for example `C:\SignalExport`). Windows paths over 260 characters break in some tools. The build handles them, but rclone and Explorer may not. Optional upload: `rclone copy "$HOME\SignalExport" myremote:Signal-export`.
+
+### Opening the viewer
+
+The viewer is a static page that loads from `file://` without a server or network:
+
+- macOS: `open viewer/index.html`, or double-click it in Finder
+- Linux: `xdg-open viewer/index.html`
+- Windows: `Start-Process viewer\index.html`, or double-click it in Explorer
+
+Every media path the build writes is relative, `/`-separated and percent-encoded. You can move or copy the whole export folder (with `viewer/` inside it) to another machine or OS and it still works. Rerun `build_viewer.py` after each new export. It swaps the new `data/` and `search/` folders in at the end, so an open viewer never sees half a build.
 
 ## How dedup works
 

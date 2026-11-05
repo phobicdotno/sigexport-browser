@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: ${{ matrix.os }} / py${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python: ['3.10', '3.13']
+    defaults:
+      run:
+        shell: bash
+    env:
+      PYTHONUTF8: '1'
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b # v5.3.0
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Viewer build tests (synthetic fixture)
+        run: python -m unittest discover -s tests -t . -p 'test_*.py' -v
+      - name: Pipeline tests
+        run: |
+          if ls pipeline/tests/test_*.py >/dev/null 2>&1; then
+            python -m unittest discover -s pipeline/tests -t pipeline/tests -p 'test_*.py' -v
+          else
+            echo "no Python pipeline tests yet"
+          fi
+      - name: Build viewer against fixture and check output
+        run: |
+          W="$RUNNER_TEMP/ci-export"
+          rm -rf "$W"; cp -R tests/fixtures/export "$W"; cp -R viewer "$W/viewer"
+          python "$W/viewer/build_viewer.py" --root "$W" --out "$W/viewer"
+          python - "$W/viewer" <<'PY'
+          import json, sys
+          from pathlib import Path
+          from urllib.parse import unquote
+          out = Path(sys.argv[1]); n = 0
+          for f in (out / 'data').glob('*.js'):
+              js = f.read_text(encoding='utf-8')
+              chat = json.loads(js[js.index(']=') + 2:].rstrip().rstrip(';'))
+              for m in chat['messages']:
+                  for a in m['a']:
+                      p = a['path']; n += 1
+                      assert '\\' not in p, p
+                      assert (out / unquote(p)).is_file(), p
+          assert n == 3, n
+          print('ok: %d media paths, forward-slash, all resolve' % n)
+          PY

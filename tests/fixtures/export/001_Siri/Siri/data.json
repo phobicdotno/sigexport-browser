@@ -1,0 +1,3 @@
+[{"date": "2026-01-01T10:00:00", "sender": "Siri", "body": "Hello from Siri https://example.com", "attachments": []},
+ {"date": "2026-01-01T10:01:00", "sender": "Me", "body": "Nice", "attachments": [{"name": "sunset photo.png", "path": "media/sunset photo.png"}], "reactions": [["Siri", "❤️"]]},
+ {"date": "2026-01-01T10:02:00", "sender": "Siri", "body": "", "attachments": [{"name": "clip#1.mp4", "path": "media\\clip#1.mp4"}]}]
