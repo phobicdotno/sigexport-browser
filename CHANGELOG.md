@@ -1,5 +1,8 @@
 # Changelog
 
+## v0.1.12 (build 8) — 2026-11-06
+- CI actions pinned to checkout v7.0.1 and setup-python v7.1.0 (Node 24; clears the Node 20 deprecation warning)
+
 ## v0.1.11 (build 7) — 2026-11-06
 - Auto-refresh: the build writes build_stamp.js last; an open viewer tab polls it every 30 s and reloads itself after a rebuild, keeping the open chat, scroll position (or bottom), media tab and search text; it waits while the lightbox, fullscreen or a text field is in use
 
