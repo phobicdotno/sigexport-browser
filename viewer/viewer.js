@@ -13,7 +13,7 @@ var I18N={
   sub:'Archive · {n} messages · {m} photos/videos',loadFail:'Could not load data/{n}.js – rebuild the viewer.',
   deleted:'Deleted message',call:'Call',missed:'Missed call',unknownDate:'Unknown date',older:'Scroll up for older messages ({n})',
   noHits:'0 matches',noMedia:'No photos or videos in this chat.',prevHit:'Previous match',nextHit:'Next match',
-  zoom:'Zoom',smaller:'Smaller',larger:'Larger',close:'Close (Esc)',fullscreen:'Fullscreen (F)',prev:'Previous',next:'Next',gsearch:'Search all chats',none:'No matches',hitsN:'{n} matches',inChats:'in {n} chats',from:'From',to:'To',sender:'Sender',chatF:'Chat',all:'All',images:'Photos',video:'Video',audio:'Audio',files:'Files',links:'Links',backRes:'Back to results',newest:'Newest first',oldest:'Oldest first',relevance:'Relevance',searching:'Searching…',newer:'Scroll down for newer messages ({n})'},
+  zoom:'Zoom',smaller:'Smaller',larger:'Larger',close:'Close (Esc)',fullscreen:'Fullscreen (F)',prev:'Previous',next:'Next',gsearch:'Search all chats',home:'Home',none:'No matches',hitsN:'{n} matches',inChats:'in {n} chats',from:'From',to:'To',sender:'Sender',chatF:'Chat',all:'All',images:'Photos',video:'Video',audio:'Audio',files:'Files',links:'Links',backRes:'Back to results',newest:'Newest first',oldest:'Oldest first',relevance:'Relevance',searching:'Searching…',newer:'Scroll down for newer messages ({n})'},
  nb:{locale:'nb-NO',search:'Søk',searchChat:'Søk i samtalen',back:'Tilbake',media:'Media',messages:'Meldinger',
   pick:'Velg en samtale',pickHint:'Ingen samtaler? Kjør build_viewer.py på nytt etter flere eksporter.',readonly:'Arkiv – skrivebeskyttet',
   today:'I dag',yesterday:'I går',you:'Deg',youSubj:'Du',unavailable:'Media utilgjengelig',audioUnavailable:'Lyd utilgjengelig',
@@ -21,7 +21,7 @@ var I18N={
   sub:'Arkiv · {n} meldinger · {m} bilder/videoer',loadFail:'Kunne ikke laste data/{n}.js – bygg visningen på nytt.',
   deleted:'Slettet melding',call:'Anrop',missed:'Tapt anrop',unknownDate:'Ukjent dato',older:'Rull opp for eldre meldinger ({n})',
   noHits:'0 treff',noMedia:'Ingen bilder eller videoer i denne samtalen.',prevHit:'Forrige treff',nextHit:'Neste treff',
-  zoom:'Zoom',smaller:'Mindre',larger:'Større',close:'Lukk (Esc)',fullscreen:'Fullskjerm (F)',prev:'Forrige',next:'Neste',gsearch:'Søk i alle samtaler',none:'Ingen treff',hitsN:'{n} treff',inChats:'i {n} samtaler',from:'Fra',to:'Til',sender:'Avsender',chatF:'Samtale',all:'Alle',images:'Bilder',video:'Video',audio:'Lyd',files:'Filer',links:'Lenker',backRes:'Tilbake til resultater',newest:'Nyeste først',oldest:'Eldste først',relevance:'Relevans',searching:'Søker…',newer:'Rull ned for nyere meldinger ({n})'}
+  zoom:'Zoom',smaller:'Mindre',larger:'Større',close:'Lukk (Esc)',fullscreen:'Fullskjerm (F)',prev:'Forrige',next:'Neste',gsearch:'Søk i alle samtaler',home:'Hjem',none:'Ingen treff',hitsN:'{n} treff',inChats:'i {n} samtaler',from:'Fra',to:'Til',sender:'Avsender',chatF:'Samtale',all:'Alle',images:'Bilder',video:'Video',audio:'Lyd',files:'Filer',links:'Lenker',backRes:'Tilbake til resultater',newest:'Nyeste først',oldest:'Eldste først',relevance:'Relevans',searching:'Søker…',newer:'Rull ned for nyere meldinger ({n})'}
 };
 var LANG=I18N[CFG.lang]?CFG.lang:'en',L=I18N[LANG];
 function T(k,v){var s=L[k]!=null?L[k]:(I18N.en[k]!=null?I18N.en[k]:k);if(v)Object.keys(v).forEach(function(x){s=s.split('{'+x+'}').join(v[x])});return s}
@@ -428,5 +428,28 @@ if(HP.gs!=null){gsOpen(true);$('gq').value=HP.gs;if(HP.gtype)$('gtype').value=HP
   if(HP.hit)(function w(){if(GS.flat&&GS.flat.length){var h=GS.flat[+HP.hit];openChat(h.c,h.i)}else setTimeout(w,50)})()}
 if(q&&HP.rp!=null)(function w(){var r=chat&&document.querySelector('#msgs .reacts[data-i="'+(HP.rp==='last'?msgs.length-1:+HP.rp)+'"]');if(r){r.scrollIntoView({block:'center'});setTimeout(function(){RP.force=true;rpShow(r.querySelector('.pill')||r,true)},150)}else setTimeout(w,50)})();
 if(q&&HP.cs)(function w(){if(chat){window.__search(HP.cs);if(HP.cn)setTimeout(function(){for(var k=0;k<+HP.cn;k++)step(-1)},300)}else setTimeout(w,50)})();
+// ---- Home reset: title/avatar click or Esc with nothing open
+function home(){
+  rpHide();if(!$('lb').hidden)closeLB();
+  GS.gen++;GS.q=null;GS.res=[];GS.flat=[];GS.shown=0;
+  ['gq','gsender','gfrom','gto'].forEach(function(id){$(id).value=''});$('gchat').value='';$('gtype').value='0';$('gsort').value='new';
+  $('gres').textContent='';$('gcount').textContent='';gsOpen(false);
+  $('chatfilter').value='';$('lfilter').hidden=true;
+  $('search').value='';term='';hits=[];hitPos=-1;qterms=null;$('scount').textContent='';tools(false,false);
+  $('backres').hidden=true;
+  if(chat){showTab('msg');start=Math.max(0,msgs.length-CHUNK);end=msgs.length;renderMsgs(true)}
+  renderList();
+  document.body.classList.remove('inchat');
+  if(location.hash)try{history.replaceState(null,'',location.pathname+location.search)}catch(e){}
+}
+['apptitle','meav'].forEach(function(id){var e=$(id);e.classList.add('homebtn');e.tabIndex=0;e.setAttribute('role','button');
+  e.setAttribute('aria-label',T('home'));e.title=T('home');
+  e.addEventListener('click',home);e.addEventListener('keydown',function(ev){if(ev.key==='Enter'||ev.key===' '){ev.preventDefault();home()}})});
+window.addEventListener('keydown',function(e){if(e.key!=='Escape')return;
+  if(RP.anchor||!$('lb').hidden)return; // handled by popover / lightbox handlers
+  if(GS.open){gsOpen(false);return}
+  if(!$('tools').hidden||$('chat').classList.contains('toolsopen')){tools(false,false);return}
+  home()},true);
+window.__home=home;
 window.__openChat=openChat;window.__search=function(v){tools(true,true);$('search').value=v;doSearch()};window.__openLB=openLB;
 })();

@@ -46,6 +46,8 @@ What changes:
 
 **Viewer** (`viewer/`)
 - chat list, message bubbles, reactions, quotes, call-history lines
+- hover (desktop) or tap (touch) a reaction to see who reacted with which emoji
+- Home reset: click the app title or the round avatar at the top left, or press Esc when nothing is open, to close searches, the media tab and the lightbox and jump every chat back to its newest messages
 - square media grid with zoom slider, ctrl/cmd + mouse wheel and pinch zoom
 - fullscreen lightbox
 - global search with filters and jump-to-message
@@ -55,7 +57,7 @@ What changes:
 **Pipeline** (`pipeline/`)
 - resumable per-chat export with sigexport (state in `OUT_DIR/_state`)
 - md5 media dedup across chats: the first copy wins, and the `chat.md`, `index.html` and `data.json` links of later copies are rewritten to point at it
-- link check after dedup; a chat that fails the check is re-exported without dedup
+- link check after dedup; a chat that fails the check is re-exported without dedup. Attachments that sigexport itself reported missing at export time (`missing_kind` set in `data.json`) are left out of the link check, so they don't block dedup, and are counted in the manifest column `missing_reported`
 - optional `rclone copy` + `rclone check --one-way` per chat; local exports are never deleted
 - stickers are exported once
 - disk-space guards (pause below `MIN_FREE_GIB`, abort the current chat below `ABORT_FREE_GIB`)
@@ -66,6 +68,7 @@ What changes:
 |---|---|
 | ![Media grid](docs/screenshots/wide_media.png) | ![Global search](docs/screenshots/global_desktop.png) |
 | ![Lightbox](docs/screenshots/lightbox.png) | ![Search filters](docs/screenshots/global_filters.png) |
+| ![Who reacted](docs/screenshots/reactions.png) | ![Chat list (phone)](docs/screenshots/list.png) |
 
 All screenshots use synthetic test data.
 

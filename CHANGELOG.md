@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.1.4 (build 3) — 2026-11-05
+- Home reset: clicking the app title or avatar (or Esc with nothing open) closes searches, media tab, lightbox and popovers and returns every chat to its newest messages
+- Link check ignores attachments that sigexport reported missing at export time; new manifest column missing_reported
+- Screenshots refreshed with new synthetic test names, plus a reactions screenshot
+
 ## v0.1.1 (build 2) — 2026-11-05
 - Reaction hover/tap popover showing who reacted with which emoji
 

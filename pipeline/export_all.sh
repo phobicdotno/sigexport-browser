@@ -56,7 +56,7 @@ IDX=$STATE/media_index.tsv
 STK=$STATE/stickers_done
 SIGOUT=$STATE/sigexport_last.out
 mkdir -p "$ROOT" "$STATE"; touch "$DONE" "$FAILED" "$IDX"
-[ -f "$MAN" ] || echo 'index,chat_name,media_files,deduped,bytes_saved,bytes_kept,upload,check,linkcheck,free_gib_after' > "$MAN"
+[ -f "$MAN" ] || echo 'index,chat_name,media_files,deduped,bytes_saved,bytes_kept,upload,check,linkcheck,free_gib_after,missing_reported' > "$MAN"
 
 log(){ echo "$(date '+%F %T') $*" >> "$LOG"; }
 free_kb(){ df -k "$ROOT" | awk 'NR==2{print $4}'; }
@@ -107,7 +107,7 @@ export_chat(){
   [ $EXP_RC -ne 0 ] && EXP_RC=1
 }
 
-mark(){ echo "$1,$(csvq "$2"),$3,$4,$5,$6,$7,$8,$9,${10}" >> "$MAN"; }
+mark(){ echo "$1,$(csvq "$2"),$3,$4,$5,$6,$7,$8,$9,${10},${11:-0}" >> "$MAN"; }
 
 process(){
   local idx=$1 name=$2 pidx safe d w remote rc
@@ -116,6 +116,7 @@ process(){
   d="${pidx}_${safe}"; w="$ROOT/$d"; remote="$REMOTE/$d"
   wait_disk
   log "chat=$idx start dir=$d free_gib=$(free_gib)"
+  rm -f "$STATE/present/$d.json"   # pre-dedup media listing is per export
   local t0; t0=$(date +%s)
   export_chat "$name" "$w"
   if [ $EXP_RC -eq 3 ]; then
@@ -137,11 +138,13 @@ process(){
     printf '%s\t%s\texport failed\n' "$idx" "$name" >> "$FAILED"; mark "$idx" "$name" 0 0 0 0 failed-export - - "$(free_gib)"; return 0
   fi
   [ -e "$STK" ] || touch "$STK"
-  # --- dedup + link check
+  # --- dedup + link check (attachments sigexport reported missing - missing_kind in
+  # data.json, or files it never wrote ("No file to copy") - are excluded from the
+  # check and counted as missing_reported instead of forcing a no-dedup re-export)
   local res lc lcstat=ok lrc
   res=$(python3 -I "$DD" dedup "$ROOT" "$d" "$IDX" 2>> "$LOG"); rc=$?
   if [ $rc -ne 0 ] || [ -z "$res" ]; then lcstat=link_failed; res='{}'; fi
-  lc=$(python3 -I "$DD" linkcheck "$ROOT" "$d" "$IDX" 2>> "$LOG"); lrc=$?
+  lc=$(LC_SIGLOG="$SIGOUT" python3 -I "$DD" linkcheck "$ROOT" "$d" "$IDX" 2>> "$LOG"); lrc=$?
   if [ $lrc -ne 0 ] || [ $lcstat != ok ]; then
     log "chat=$idx LINK_FAILED ($lc) -> re-export without dedup"
     lcstat=link_failed
@@ -150,10 +153,11 @@ process(){
       rm -rf "$w"; printf '%s\t%s\tre-export failed\n' "$idx" "$name" >> "$FAILED"; mark "$idx" "$name" "$n_media" 0 0 0 failed-export - link_failed "$(free_gib)"; return 0
     fi
     res=$(python3 -I "$DD" indexonly "$ROOT" "$d" "$IDX" 2>> "$LOG")
-    lc=$(python3 -I "$DD" linkcheck "$ROOT" "$d" "$IDX" 2>> "$LOG") || lcstat=link_failed_nodedup_still_bad
+    lc=$(LC_SIGLOG="$SIGOUT" python3 -I "$DD" linkcheck "$ROOT" "$d" "$IDX" 2>> "$LOG") || lcstat=link_failed_nodedup_still_bad
   fi
-  local nded saved kept
+  local nded saved kept mrep
   nded=$(jget "$res" deduped); saved=$(jget "$res" saved); kept=$(jget "$res" kept)
+  mrep=0; [ -n "${lc:-}" ] && mrep=$(jget "$lc" missing_reported 2>/dev/null || echo 0)
   log "chat=$idx dedup media=$n_media linked=$nded bytes_saved=$saved bytes_kept=$kept linkcheck=$lcstat $lc"
   # --- optional upload + verification (copy only, local export is kept)
   local up=skipped ck=skipped
@@ -172,7 +176,7 @@ process(){
     fi
   fi
   if [ "$up" != failed ] && [ "$ck" != failed ]; then printf '%s\t%s\n' "$idx" "$name" >> "$DONE"; fi
-  mark "$idx" "$name" "$n_media" "$nded" "$saved" "$kept" "$up" "$ck" "$lcstat" "$(free_gib)"
+  mark "$idx" "$name" "$n_media" "$nded" "$saved" "$kept" "$up" "$ck" "$lcstat" "$(free_gib)" "$mrep"
   log "chat=$idx finished free_gib=$(free_gib)"
 }
 

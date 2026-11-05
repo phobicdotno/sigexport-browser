@@ -214,3 +214,9 @@ mark.cur{background:var(--hitcur)}
 .pillbtn{background:var(--pill);color:var(--text);border-radius:var(--r-pill);padding:4px 10px;font:12px var(--font);flex:none;white-space:nowrap}
 @keyframes flashmsg{0%,40%{background:color-mix(in srgb,var(--hitcur) 45%,transparent)}100%{background:transparent}}
 .flash{animation:flashmsg 2.2s ease-out}
+/* Home reset: app title + avatar */
+.side-head h1.homebtn{flex:0 1 auto;margin-right:auto}
+.homebtn{cursor:pointer;border-radius:8px;user-select:none}
+.side-head .me.homebtn{border-radius:50%}
+.homebtn:hover{opacity:.85}
+.homebtn:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
