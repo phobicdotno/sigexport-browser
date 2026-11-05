@@ -1,5 +1,8 @@
 # Changelog
 
+## v0.1.1 (build 2) — 2026-11-05
+- Reaction hover/tap popover showing who reacted with which emoji
+
 ## v0.1.0 (build 1) — 2026-11-05
 - Offline chat browser (viewer/): chat list, message bubbles, reactions, quotes, call-history lines
 - Media gallery: square grid with zoom slider, ctrl/cmd+wheel and pinch zoom, fullscreen lightbox

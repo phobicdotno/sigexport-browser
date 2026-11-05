@@ -129,6 +129,11 @@ mark.cur{background:var(--hitcur)}
 .reacts{display:flex;gap:4px;margin:-8px 14px 2px;position:relative;z-index:2;flex-wrap:wrap}
 .pill{background:var(--in);border:2px solid var(--bg);border-radius:16px;padding:0 6px;font-size:15px;line-height:24px;min-width:32px;text-align:center}
 .out .pill{background:var(--in)}
+.pill{cursor:default;user-select:none}.pill:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+#rpop{position:fixed;z-index:90;max-width:min(320px,calc(100vw - 16px));background:var(--bar);color:var(--text);border:1px solid var(--line);border-radius:var(--r-field);padding:6px 10px;box-shadow:0 4px 16px rgba(0,0,0,.28);font:13.5px/1.45 var(--font);pointer-events:none}
+#rpop[hidden]{display:none}
+.rpl{display:flex;gap:8px;padding:2px 0}.rpe{flex:none;font-size:16px;line-height:20px}.rpn{color:var(--sub);overflow-wrap:anywhere}
+#lbcap .lbr{font-size:13px;color:var(--lb-sub);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .grid{display:grid;gap:2px;border-radius:var(--r-media);overflow:hidden;width:300px;max-width:100%}
 .bub.media-only .grid{border-radius:var(--r-bubble)}
 .g1{grid-template-columns:1fr}.g2{grid-template-columns:1fr 1fr}.g3,.g4{grid-template-columns:1fr 1fr}
