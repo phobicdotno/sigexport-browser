@@ -74,3 +74,31 @@ class BuildViewerTest(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class CentralLayoutTest(unittest.TestCase):
+    """Central media store: data.json paths are ../../Media/<Type>/<file>."""
+    def test_central_paths_resolve(self):
+        tmp = Path(tempfile.mkdtemp())
+        try:
+            root = tmp / 'export'
+            shutil.copytree(REPO / 'tests' / 'fixtures' / 'export_central', root)
+            out = root / 'viewer'
+            shutil.copytree(REPO / 'viewer', out)
+            r = subprocess.run([sys.executable, '-I', str(out / 'build_viewer.py'), '--root', str(root),
+                                '--out', str(out)], capture_output=True, text=True, encoding='utf-8')
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn('chats=1', r.stdout)
+            self.assertIn('unresolved_media=0', r.stdout)
+            n = 0
+            for f in (out / 'data').glob('*.js'):
+                for m in payload(f.read_text(encoding='utf-8'))['messages']:
+                    for a in m['a']:
+                        n += 1
+                        self.assertTrue(a['ok'], a)
+                        self.assertTrue(a['path'].startswith('../Media/'), a['path'])
+                        self.assertIn('%23', a['path']) if 'clip' in a['path'] else None
+                        self.assertTrue((out / unquote(a['path'])).is_file(), a['path'])
+            self.assertEqual(n, 2)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)

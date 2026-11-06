@@ -153,7 +153,7 @@ class Resume(unittest.TestCase):
         calls = t / "calls.txt"
         os.environ.update(FAKE_CALLS=str(calls), FAKE_FAIL="Bob", POLL_SECS="0.05",
                           MIN_FREE_GIB="0", ABORT_FREE_GIB="0")
-        args = ["--src", str(src), "--out", str(t / "out"), "--sigexport", str(fake), "--remote", ""]
+        args = ["--src", str(src), "--out", str(t / "out"), "--sigexport", str(fake), "--remote", "", "--media-layout", "per-chat"]
         try:
             self.assertEqual(export_all.main(args), 0)
             st = t / "out/_state"

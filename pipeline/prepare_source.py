@@ -14,7 +14,7 @@ be pointed straight at the Signal folder with Signal closed.
 
 Usage: prepare_source.py [SIGNAL_DIR] [WORK_DIR]
   SIGNAL_DIR default: auto-detected per OS (see platform_util.py)
-  WORK_DIR   default: ~/SignalExport/_src
+  WORK_DIR   default: $OUT_DIR/_work/src (OUT_DIR default ~/SignalExport; never /tmp)
 """
 from __future__ import annotations
 
@@ -114,7 +114,8 @@ def main(argv: list[str]) -> int:
     if sig is None:
         raise SystemExit("Signal Desktop folder not found; pass it as the first argument")
     work = Path(argv[1]).expanduser() if len(argv) > 1 else Path(
-        os.environ.get("WORK_DIR") or Path.home() / "SignalExport" / "_src").expanduser()
+        os.environ.get("WORK_DIR")
+        or Path(os.environ.get("OUT_DIR") or Path.home() / "SignalExport").expanduser() / "_work" / "src").expanduser()
     prepare(sig, work)
     return 0
 

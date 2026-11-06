@@ -7,20 +7,34 @@ optionally copies each chat to an rclone remote and verifies with `rclone check 
 Local exports are never deleted after success.
 
 Configuration (env vars or flags; flags win):
-  SIGNAL_SRC      Signal dir or prepared copy (default: auto-detect)   --src DIR
+  SIGNAL_SRC      Signal dir or prepared copy (default: OUT_DIR/_work/src if prepared, else auto-detect) --src DIR
   OUT_DIR         export destination (default ~/SignalExport)           --out DIR
   REMOTE          rclone destination, e.g. myremote:Signal-export       --remote R
                   (empty = no upload, no check)
-  MIN_FREE_GIB    pause new chats while free space is below (6)         --min-free N
-  ABORT_FREE_GIB  abort the current chat when free space drops (4)      --abort-free N
+  MEDIA_LAYOUT    central (default): every unique file once in          --media-layout L
+                  OUT_DIR/Media/<Type>/, chats link ../../Media/<Type>/<file>;
+                  per-chat: old layout, media/ per chat, cross-chat dedup links
+  MIN_FREE_GIB    a chat with no size estimate starts only with this      --min-free N
+                  much free (8); with an estimate: estimate*1.15 + ABORT_FREE_GIB
+  ABORT_FREE_GIB  hard floor: sigexport is stopped (terminate, then kill) --abort-free N
+                  and the chat is marked for retry when free space drops below (3)
+  POLL_SECS       free-space poll interval during sigexport (1.5)
+  DISK_WAIT_SECS  wait this long for space before skipping a chat that won't fit (300)
   TRANSFERS       rclone --transfers (2)                                --transfers N
   SIGEXPORT       sigexport binary (default: found on PATH)
-  STATE_DIR       logs/state (default $OUT_DIR/_state)
+  STATE_DIR       logs/state (default $OUT_DIR/_state; never /tmp)
   CHAT_TIMEOUT    seconds per chat export (14400); BLOCK_SECS (600): no output dir after
                   this long = key prompt (macOS Keychain) waiting -> stop with exit 3
   UPLOAD_TIMEOUT  rclone copy seconds (21600); CHECK_TIMEOUT rclone check seconds (7200)
 
-Resumable: re-run and it skips chat indexes listed in done.txt / failed.txt.
+Resumable: re-run and it skips chat indexes listed in done.txt / failed.txt. Chats skipped or
+stopped for disk space go to retry.tsv (not failed.txt) and are tried again on the next run.
+A chat interrupted mid-centralisation (journal in central_journal/) is finished or rolled
+back from its hard-link backup (OUT_DIR/_work/backup) before anything else.
+Before exporting, existing NNN_x folders must match the regenerated chats.txt order,
+otherwise the run aborts (exit 65) without touching anything.
+Size estimate per chat: chat_bytes.tsv (raw bytes from an earlier export/abort), else
+hashes.tsv (per-NNN sizes from a central migration), else MIN_FREE_GIB.
 State files in STATE_DIR: chats.txt (unique names, index = line number), done.txt,
 failed.txt, manifest.csv, media_index.tsv, folders.tsv (idx -> chat folders that export
 produced), collisions.tsv (name matched >1 chat, folder already exported by another index,
@@ -29,6 +43,7 @@ duplicate or unselectable names), export_all.log.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shutil
 import subprocess
@@ -41,6 +56,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 from platform_util import (KeepAwake, dir_size, find_signal_dir, free_gib,  # noqa: E402
                            safe_component, windows_problem)
+import central_media as CM  # noqa: E402
 
 DD = HERE / "dedup.py"
 MAN_HEADER = ("index,chat_name,media_files,deduped,bytes_saved,bytes_kept,upload,check,"
@@ -137,7 +153,9 @@ class Pipeline:
         self.transfers = str(a.transfers)
         self.sig = a.sigexport
         self.state = Path(a.state).expanduser() if a.state else self.root / "_state"
-        self.poll = float(os.environ.get("POLL_SECS", "10"))
+        self.layout = getattr(a, "media_layout", "central") or "central"
+        self.poll = float(os.environ.get("POLL_SECS", "1.5"))
+        self.disk_wait = float(os.environ.get("DISK_WAIT_SECS", "300"))
         self.chat_timeout = float(os.environ.get("CHAT_TIMEOUT", "14400"))
         self.block_secs = float(os.environ.get("BLOCK_SECS", "600"))
         self.upload_timeout = float(os.environ.get("UPLOAD_TIMEOUT", "21600"))
@@ -148,6 +166,8 @@ class Pipeline:
         self.man_p, self.idx_p = s / "manifest.csv", s / "media_index.tsv"
         self.stk_p, self.sigout_p = s / "stickers_done", s / "sigexport_last.out"
         self.folders_p, self.coll_p = s / "folders.tsv", s / "collisions.tsv"
+        self.retry_p, self.bytes_p = s / "retry.tsv", s / "chat_bytes.tsv"
+        self.central = CM.Central(str(self.root), str(self.state), str(self.root / "_work"))
 
     # -- helpers
     def log(self, msg: str) -> None:
@@ -187,13 +207,62 @@ class Pipeline:
         self.run_log(["rclone", "copyto", str(self.idx_p), f"{self.remote}/_manifest/media_index.tsv"], 600)
         self.log("manifests uploaded")
 
-    def wait_disk(self):
-        i = 0
-        while free_gib(self.root) < self.min_free:
-            if i % 10 == 0:
-                self.log(f"paused: low disk free_gib={self.gib()}")
-            time.sleep(60)
-            i += 1
+    # -- disk guard
+    def estimate_bytes(self, idx: int) -> int | None:
+        """Raw attachment bytes of chat idx from an earlier run. sigexport and the (encrypted)
+        DB expose no sizes without decrypting it, so: chat_bytes.tsv (written after each export or
+        abort, max wins), else hashes.tsv from a central migration (relpath starts with NNN_)."""
+        best = None
+        for line in read_lines(self.bytes_p):
+            p = line.split("\t")
+            if len(p) >= 2 and p[0].isdigit() and int(p[0]) == idx and p[1].isdigit():
+                best = max(best or 0, int(p[1]))
+        if best is not None:
+            return best
+        hp = self.state / "hashes.tsv"
+        if hp.exists():
+            pre, tot, hit = f"{idx:03d}_", 0, False
+            for line in read_lines(hp):
+                p = line.split("\t")
+                if len(p) == 3 and p[0].startswith(pre) and p[2].isdigit():
+                    tot += int(p[2])
+                    hit = True
+            if hit:
+                return tot
+        return None
+
+    def need_gib(self, idx: int) -> tuple[float, str]:
+        est = self.estimate_bytes(idx)
+        if est is None:
+            return self.min_free, "no estimate"
+        return max(self.abort_free + 1, est * 1.15 / (1 << 30) + self.abort_free), f"est_gib={est / (1 << 30):.2f}"
+
+    def wait_disk(self, idx: int) -> bool:
+        """True when the chat fits; waits up to DISK_WAIT_SECS, else False (skip, retry later)."""
+        need, why = self.need_gib(idx)
+        t0 = time.monotonic()
+        logged = False
+        while free_gib(self.root) < need:
+            if time.monotonic() - t0 >= self.disk_wait:
+                return False
+            if not logged:
+                self.log(f"chat={idx} paused: free_gib={self.gib()} need_gib={need:.1f} ({why})")
+                logged = True
+            time.sleep(min(30.0, max(0.01, self.disk_wait)))
+        return True
+
+    def record_bytes(self, idx: int, w: Path) -> None:
+        if w.is_dir():
+            append(self.bytes_p, f"{idx}\t{dir_size(w)}")
+
+    def stop(self, p) -> None:
+        """Stop sigexport cleanly: terminate, give it 10 s, then kill."""
+        p.terminate()
+        try:
+            p.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            p.kill()
+            p.wait()
 
     # -- export one chat: 0 ok, 1 fail, 2 low-disk abort, 3 blocked
     def export_chat(self, name: str, w: Path) -> int:
@@ -220,15 +289,20 @@ class Pipeline:
                 elif waited >= self.chat_timeout:
                     code = 1
                 if code is not None:
-                    p.kill()
-                    p.wait()
+                    self.stop(p)
                     return code
 
     def process(self, idx: int, name: str) -> None:
         d = chat_dir_name(idx, name)
         w = self.root / d
-        remote = f"{self.remote}/{d}"
-        self.wait_disk()
+        if not self.wait_disk(idx):
+            need, why = self.need_gib(idx)
+            self.log(f"chat={idx} SKIPPED low disk: free_gib={self.gib()} need_gib={need:.1f} ({why}) -> retry.tsv")
+            print(f"skipped chat {idx}: needs ~{need:.1f} GiB free, have {free_gib(self.root):.1f} (see retry.tsv)",
+                  file=sys.stderr)
+            append(self.retry_p, f"{idx}\t{name}\tskipped-lowdisk need_gib={need:.1f}")
+            self.mark(idx, name, 0, 0, 0, 0, "skipped-lowdisk", "-", "-")
+            return
         self.log(f"chat={idx} start dir={d} free_gib={self.gib()}")
         (self.state / "present" / f"{d}.json").unlink(missing_ok=True)
         t0 = time.time()
@@ -239,12 +313,17 @@ class Pipeline:
             self.mark(idx, name, 0, 0, 0, 0, "-", "-", "-")
             raise SystemExit(3)
         if rc == 2:
-            self.log(f"chat={idx} free disk <{self.abort_free}GiB mid-export: removing this chat's partial folder only")
+            self.log(f"chat={idx} free disk <{self.abort_free}GiB mid-export: sigexport stopped, "
+                     "removing this chat's partial folder only -> retry.tsv")
+            print(f"stopped chat {idx}: free space fell below {self.abort_free} GiB (see retry.tsv)", file=sys.stderr)
+            self.record_bytes(idx, w)  # lower bound for next run's estimate
             shutil.rmtree(w, ignore_errors=True)
-            append(self.failed_p, f"{idx}\t{name}\tlow disk abort")
+            append(self.retry_p, f"{idx}\t{name}\tlow disk abort")
             self.mark(idx, name, 0, 0, 0, 0, "aborted-lowdisk", "-", "-")
             return
         n_media = sum(1 for p in w.glob("*/media/*") if p.is_file()) if w.is_dir() else 0
+        if rc == 0:
+            self.record_bytes(idx, w)
         self.log(f"chat={idx} export rc={rc} secs={int(time.time() - t0)} media_files={n_media}")
         folders = produced_folders(w)
         if rc == 0 and not folders:
@@ -265,6 +344,29 @@ class Pipeline:
         for kind, detail in find_collisions(idx, folders, earlier):
             append(self.coll_p, f"{idx}\t{kind}\t{detail}")
             self.log(f"chat={idx} COLLISION {kind}")
+        if self.layout == "central":
+            r = self.centralise(idx, name, d)
+            if r is None:
+                return
+            nded, saved, kept, lcstat, mrep = r
+        else:
+            nded, saved, kept, lcstat, mrep = self.dedup_per_chat(idx, name, d, w, n_media)
+            if lcstat is None:
+                return
+        self.finish_chat(idx, name, d, w, n_media, nded, saved, kept, lcstat, mrep)
+
+    def centralise(self, idx, name, d):
+        try:
+            res = self.central.run(d)
+        except CM.CentralError as ex:
+            self.log(f"chat={idx} CENTRAL FAILED ({ex})")
+            append(self.failed_p, f"{idx}\t{name}\tcentral failed")
+            self.mark(idx, name, 0, 0, 0, 0, "-", "-", "central_failed")
+            return None
+        self.log(f"chat={idx} central {json.dumps(res)}")
+        return res["deduped"], res["saved"], res["kept"], "ok", 0
+
+    def dedup_per_chat(self, idx, name, d, w, n_media):
         # dedup + link check (sigexport-reported missing attachments are not failures)
         lcstat = "ok"
         drc, res = self.dd("dedup", d)
@@ -278,7 +380,7 @@ class Pipeline:
                 shutil.rmtree(w, ignore_errors=True)
                 append(self.failed_p, f"{idx}\t{name}\tre-export failed")
                 self.mark(idx, name, n_media, 0, 0, 0, "failed-export", "-", "link_failed")
-                return
+                return 0, 0, 0, None, 0
             _, res = self.dd("indexonly", d)
             lrc, lc = self.dd("linkcheck", d)
             if lrc != 0:
@@ -287,6 +389,10 @@ class Pipeline:
         mrep = lc.get("missing_reported", 0) if lc else 0
         self.log(f"chat={idx} dedup media={n_media} linked={nded} bytes_saved={saved} "
                  f"bytes_kept={kept} linkcheck={lcstat} {lc}")
+        return nded, saved, kept, lcstat, mrep
+
+    def finish_chat(self, idx, name, d, w, n_media, nded, saved, kept, lcstat, mrep):
+        remote = f"{self.remote}/{d}"
         up = ck = "skipped"
         if self.remote:
             mib = dir_size(w) // (1 << 20)
@@ -330,7 +436,20 @@ class Pipeline:
             p.touch()
         if not self.man_p.exists():
             self.man_p.write_text(MAN_HEADER + "\n", encoding="utf-8", newline="\n")
+        for top in self.central.pending():  # crash mid-centralisation: finish or roll back
+            try:
+                self.log(f"resume central {top[:3]} {json.dumps(self.central.resume(top))}")
+            except CM.CentralError as ex:
+                self.log(f"resume central {top[:3]} FAILED ({ex}); will re-export")
+                shutil.rmtree(self.root / top, ignore_errors=True)
         names = self.ensure_chats()
+        bad = CM.verify_order(str(self.root), names)
+        if bad:
+            msg = (f"ABORT: chats.txt order does not match existing folders (mismatched NNN: "
+                   f"{' '.join(bad)}). Nothing exported. Fix or remove {self.chats_p} and rerun.")
+            self.log(msg)
+            print(msg, file=sys.stderr)
+            return 65
         self.log(f"START total_chats={len(names)} free_gib={self.gib()} remote={self.remote or 'none'}")
         done, failed = idx_set(self.done_p), idx_set(self.failed_p)
         first_idx: dict[str, int] = {}
@@ -382,12 +501,16 @@ def main(argv=None) -> int:
     ap.add_argument("--src", default=e("SIGNAL_SRC") or None)
     ap.add_argument("--out", default=e("OUT_DIR") or str(Path.home() / "SignalExport"))
     ap.add_argument("--remote", default=e("REMOTE", ""))
-    ap.add_argument("--min-free", default=e("MIN_FREE_GIB", "6"))
-    ap.add_argument("--abort-free", default=e("ABORT_FREE_GIB", "4"))
+    ap.add_argument("--media-layout", choices=("central", "per-chat"), default=e("MEDIA_LAYOUT") or "central")
+    ap.add_argument("--min-free", default=e("MIN_FREE_GIB", "8"))
+    ap.add_argument("--abort-free", default=e("ABORT_FREE_GIB", "3"))
     ap.add_argument("--transfers", default=e("TRANSFERS", "2"))
     ap.add_argument("--state", default=e("STATE_DIR") or None)
     ap.add_argument("--sigexport", default=None)
     a = ap.parse_args(argv)
+    prepared = Path(a.out).expanduser() / "_work" / "src"
+    if not a.src and (prepared / "config.json").is_file():
+        a.src = str(prepared)  # copy made by prepare_source.py
     if not a.src:
         found = find_signal_dir()
         if found:

@@ -12,19 +12,16 @@ sigexport-browser exports every chat, removes duplicate media (a video forwarded
 
 ## Real-world result (one user, anonymized)
 
-Measured from the Signal database before the full export finished:
+Measured on a real export after converting it to the central media layout:
 
 | | |
 |---|---|
-| Signal Desktop attachments folder | 35 GiB, 32,106 files (incl. ~3 GB thumbnails/screenshots) |
-| Attachment references | 19,003 |
-| Unique content | ~12.9 GB (9,924 files) |
-| Without dedup an export would be | ~49 GB |
-| With dedup | ~13 GB |
-| Saved | ~36 GB, mostly videos forwarded to many chats (1,442 duplicate groups spanning several chats) |
-| Chats kept | all (~205) |
+| Chats exported | 33 |
+| Raw media written by sigexport | 17.9 GB |
+| Duplicates removed | 11.55 GB |
+| Media on disk after | 6.0 GB (each unique file once, in `Media/`) |
 
-Final measured numbers will be added when the export completes. Run `tools/measure_duplicates.py` to get your own estimate.
+Earlier estimate from the Signal database for the same account: 35 GiB attachments folder, 19,003 attachment references, ~12.9 GB unique content. Run `tools/measure_duplicates.py` to get your own estimate.
 
 ## What you keep / what changes
 
@@ -185,7 +182,17 @@ The viewer is a static page that loads from `file://` without a server or networ
 
 Every media path the build writes is relative, `/`-separated and percent-encoded. You can move or copy the whole export folder (with `viewer/` inside it) to another machine or OS and it still works. Rerun `build_viewer.py` after each new export. It swaps the new `data/` and `search/` folders in at the end, so an open viewer never sees half a build.
 
-## How dedup works
+## Media layout
+
+Default (`--media-layout central` / `MEDIA_LAYOUT=central`): every unique file lives once in `OUT_DIR/Media/{Pictures,Videos,Audio,Documents}/` under its sigexport name (stickers go to Pictures). When two different files would get the same name, `_<md5[:8]>` goes before the extension. Every chat links to `../../Media/<Type>/<file>` (URL-encoded in `chat.md`/`index.html`, plain in `data.json`), and per-chat `media/` folders are removed. `STATE_DIR/media_index.tsv` maps md5 to `Media/<Type>/<file>`.
+
+After each chat: a hard-link backup is taken, every file is hashed, and a journal (`_state/central_journal/`) is written. Then new files are moved into `Media/`, links are rewritten, and duplicate copies are deleted. A link check runs (every link that resolved before must still resolve), and the empty `media/` is removed. If the run crashes mid-chat, the next run finishes that chat from the journal or restores the backup. Before exporting, the regenerated `chats.txt` must match the existing `NNN_` folders, otherwise the run aborts.
+
+`--media-layout per-chat` keeps the old layout (see below).
+
+**Disk guard.** sigexport and the encrypted DB expose no attachment sizes, so a chat starts only when free space is at least its size from an earlier run × 1.15 + `ABORT_FREE_GIB`. That size comes from `chat_bytes.tsv` or a migration's `hashes.tsv`. With no history, `MIN_FREE_GIB` (8) is required. A chat that does not fit within `DISK_WAIT_SECS` is skipped and listed in `retry.tsv`. During sigexport, free space is polled every `POLL_SECS` (1.5 s). Below `ABORT_FREE_GIB` (3), sigexport is terminated, the partial folder is removed and the chat goes to `retry.tsv`. State and the prepared DB copy stay under `OUT_DIR` (`_state`, `_work/src`), never in `/tmp`.
+
+## How dedup works (per-chat layout)
 
 After each chat is exported, `pipeline/dedup.py` hashes every file in its `media/` folder with md5. A global index (`media_index.tsv`) maps hash to the first file seen. When a later file has the same hash, and the first copy still exists and still matches, the links in that chat's `chat.md`, `index.html` and `data.json` are rewritten to a relative path such as `../../012_Other/Other/media/video.mp4`. Each file is rewritten atomically, and the duplicate is deleted only after that. A link check then resolves every media link. If any link is broken, the chat is re-exported without dedup.
 

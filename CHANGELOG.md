@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.1.21 (build 10) — 2026-11-06
+- Central media layout (new default, `--media-layout central` / `MEDIA_LAYOUT`): pipeline/central_media.py files each unique file once in OUT_DIR/Media/<Type>/ (ext/MIME, stickers -> Pictures, `_<md5[:8]>` on name clash), rewrites chat.md/index.html/data.json to ../../Media/<Type>/<file>, link-checks, removes media/; `per-chat` keeps the old layout
+- Crash-safe per file: hard-link backup + journal (_state/central_journal) before anything moves, move -> index -> rewrite -> delete copies, idempotent resume on the next run, rollback from backup on failure; state compatible with a migrated export (done.txt NNN, central media_index.tsv)
+- Order check (port of verify_chats.py): existing NNN_ folders (also _dupe_chats/_incomplete) must match the regenerated chats.txt, else abort with exit 65
+- Disk guard: per-chat size estimate from chat_bytes.tsv / hashes.tsv (sigexport and the DB expose no sizes), else MIN_FREE_GIB 8; chats that won't fit are skipped into retry.tsv; free space polled every 1.5 s during sigexport, terminate/kill below ABORT_FREE_GIB 3 and mark for retry; state stays under OUT_DIR
+- Tests: central filing new/known md5, name-clash suffix, rewrite + link check + rollback, resume after a crash mid-chat, disk guard (mocked disk_usage), order check; viewer fixture tests/fixtures/export_central; README Media layout section and measured stats (33 chats, 17.9 GB raw, 11.55 GB duplicates removed, 6.0 GB after)
+
 ## v0.1.16 (build 9) — 2026-11-06
 - pipeline/export_all.py: cross-platform (macOS, Linux, Windows) stdlib Python port of export_all.sh with the same env vars/flags, resume, manifest, dedup, link check, rclone copy + one-way check, disk guards and per-chat timeouts; keep-awake via caffeinate / systemd-inhibit / SetThreadExecutionState; Signal folder auto-detected per OS (incl. Flatpak and Snap)
 - pipeline/prepare_source.py: cross-platform port; also copies "Local State" (needed for Windows DPAPI key), falls back to directory junctions on Windows; the .sh files are now thin wrappers
