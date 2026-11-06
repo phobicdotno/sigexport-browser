@@ -182,6 +182,62 @@ The viewer is a static page that loads from `file://` without a server or networ
 
 Every media path the build writes is relative, `/`-separated and percent-encoded. You can move or copy the whole export folder (with `viewer/` inside it) to another machine or OS and it still works. Rerun `build_viewer.py` after each new export. It swaps the new `data/` and `search/` folders in at the end, so an open viewer never sees half a build.
 
+## Phone backup (Android)
+
+Researched 2026-11-06. sigexport-browser does not read phone backups yet. This section describes the current Signal Android backup format and how to get a copy off the phone safely, using other people's tools.
+
+**Planned (not built yet):** a converter that merges phone-only history (for example messages from before Desktop was linked) into the sigexport-browser archive, with dedup and the central `Media/` layout.
+
+### Old `.backup` files: copy them off first
+
+Signal Android's on-device backups now use the new cross-platform "backup v2" format, unlocked by your 64-character account **recovery key**. The legacy 30-digit-passphrase `.backup` format is effectively gone.
+
+Confirming the new backup setup turns legacy backups off, clears the passphrase and **deletes the existing `.backup` files** (Signal-Android `LocalBackupsViewModel.handleUpgrade`, `BackupUtil.deleteAllBackups`). If you have an old `.backup`, copy it off the phone before you switch. [signalbackup-tools](https://github.com/bepaald/signalbackup-tools) handles legacy backups fully, including `--exporthtml`.
+
+### Backup layout
+
+Under the folder you pick in Signal (from Signal-Android `backup/v2/local/ArchiveFileSystem.kt`):
+
+```
+SignalBackups/
+   files/<2-hex>/<mediaName>          shared encrypted media
+   signal-backup-YYYY-MM-DD-HH-mm-ss/ main, metadata, files
+```
+
+### Copy it to a computer
+
+```sh
+# enable USB debugging on the phone and accept the prompt
+adb pull /sdcard/<folder>/SignalBackups ~/SignalPhoneBackup
+```
+
+MTP (for example OpenMTP) works too, but it has been seen to silently drop small files ([signalbackup-tools #382](https://github.com/bepaald/signalbackup-tools/issues/382)). Compare the file count on the phone and on the computer afterwards.
+
+### Decrypt it
+
+- **Messages:** libsignal's [message-backup](https://github.com/signalapp/libsignal/tree/main/rust/message-backup) example decrypts a snapshot to JSON (messages only, no HTML, no media). This command is taken from the libsignal source and has not been verified by us yet:
+
+  ```sh
+  git clone https://github.com/signalapp/libsignal && cd libsignal
+  cargo run --release -p libsignal-message-backup --features json --example decrypt_backup -- \
+    --account-entropy "<recovery key>" \
+    --metadata <snapshot>/metadata <snapshot>/main > phone_backup.json
+  ```
+
+- **Media:** [Escartem/SignalTool](https://github.com/Escartem/SignalTool) can decrypt `files/`. Decrypted media is zero-padded and must be trimmed ([signalbackup-tools #382](https://github.com/bepaald/signalbackup-tools/issues/382)).
+- **signalbackup-tools:** v2 support is in progress (branch `signalbackup-tools_bv2`, "very incomplete" as of 2026-11-02).
+- **Export chat history:** some builds have Settings > Chats > Export chat history. It writes plaintext `metadata.json` + `main.jsonl` + `files/` and is gated by a server-side flag. Use it if your phone has it.
+
+### Risks
+
+- The recovery key decrypts **all** your backups. Treat it like a master password, and never paste it into chats, issues or screenshots. If it has been exposed, create a new recovery key in Signal. The new key syncs to linked devices, and older backups then need the old key, so make a fresh backup afterwards.
+- "Optimize storage" leaves media out of the backup.
+- Messages with disappearing-message timers under 24 hours are not backed up.
+- Plaintext exports (JSON, Export chat history) are unencrypted. Store them like the rest of `OUT_DIR`.
+- Don't restore a backup that a third-party tool has modified to your phone.
+
+Sources: [signalbackup-tools](https://github.com/bepaald/signalbackup-tools), [signalbackup-tools #382](https://github.com/bepaald/signalbackup-tools/issues/382), [libsignal message-backup](https://github.com/signalapp/libsignal/tree/main/rust/message-backup), [Signal-Android](https://github.com/signalapp/Signal-Android), [Escartem/SignalTool](https://github.com/Escartem/SignalTool), [Help Net Security, 2026-09-30](https://www.helpnetsecurity.com/2026/09/30/signal-encrypted-backups-ios-8-30/), [Signal blog: Introducing secure backups](https://signal.org/blog/introducing-secure-backups/).
+
 ## Media layout
 
 Default (`--media-layout central` / `MEDIA_LAYOUT=central`): every unique file lives once in `OUT_DIR/Media/{Pictures,Videos,Audio,Documents}/` under its sigexport name (stickers go to Pictures). When two different files would get the same name, `_<md5[:8]>` goes before the extension. Every chat links to `../../Media/<Type>/<file>` (URL-encoded in `chat.md`/`index.html`, plain in `data.json`), and per-chat `media/` folders are removed. `STATE_DIR/media_index.tsv` maps md5 to `Media/<Type>/<file>`.

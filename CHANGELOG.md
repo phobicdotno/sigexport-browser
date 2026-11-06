@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.1.24 (build 12) — 2026-11-06
+- README: new "Phone backup (Android)" section (researched 2026-11-06): backup v2 format and recovery key, legacy `.backup` files deleted on upgrade (copy them off first), SignalBackups layout, copying with adb/MTP and checking the file count, decrypting with libsignal / SignalTool / signalbackup-tools, risks, sources
+- README: merging phone-only history into the archive (dedup, central `Media/`) marked as planned, not built
+
 ## v0.1.22 (build 11) — 2026-11-06
 - dedup.py/central_media.py: markdown link regexes accept CRLF line endings (Windows chat.md), fixes the Windows CI failures
 
