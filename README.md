@@ -37,7 +37,7 @@ What changes:
 
 ## Safe order
 
-1. Export (`pipeline/export_all.sh`).
+1. Export (`python3 pipeline/export_all.py`).
 2. Verify: the link check must pass, and if you upload a backup, `rclone check --one-way` must report 0 differences (the pipeline runs both for you).
 3. Only then clear Signal's attachments.
 
@@ -59,8 +59,8 @@ What changes:
 - link check after dedup; a chat that fails the check is re-exported without dedup. Attachments that sigexport itself reported missing at export time (`missing_kind` set in `data.json`) are left out of the link check, so they don't block dedup, and are counted in the manifest column `missing_reported`
 - optional `rclone copy` + `rclone check --one-way` per chat; local exports are never deleted
 - stickers are exported once
-- disk-space guards (pause below `MIN_FREE_GIB`, abort the current chat below `ABORT_FREE_GIB`)
-- Keychain-block guard: it stops cleanly if sigexport hangs on the Keychain prompt
+- disk-space guards (a chat starts only with enough free space, `MIN_FREE_GIB` when there is no size estimate; sigexport is stopped below `ABORT_FREE_GIB` and the chat is queued for retry)
+- key-prompt guard: it stops cleanly if sigexport hangs waiting for the OS key store (e.g. the macOS Keychain prompt)
 - manifest CSV with per-chat media counts, bytes saved, upload and check status
 
 <table>
@@ -82,14 +82,19 @@ All screenshots use synthetic test data.
 
 ## Requirements
 
-- macOS (tested on macOS 26). The pipeline uses macOS paths and `osascript`. The viewer runs in any modern browser.
-- Signal Desktop
-- [signal-export](https://github.com/carderne/signal-export) (`sigexport`) ≥ 3.9.3 on Python ≥ 3.10, e.g.
+- **OS:** macOS, Linux or Windows. The pipeline (`pipeline/export_all.py`, `pipeline/prepare_source.py`, `pipeline/platform_util.py`) is stdlib-only Python with per-OS Signal paths, keep-awake and disk checks, and its unit tests run in CI on ubuntu-latest, windows-latest and macos-latest (Python 3.10 and 3.13). Honest caveat: CI uses synthetic data; real exports of a real Signal account have only been run on macOS 26 so far. Linux and Windows reports are welcome.
+- **Python 3.10+** (no third-party packages for the pipeline or the viewer build).
+- **[signal-export](https://github.com/carderne/signal-export) (`sigexport`) 3.9.x**, 3.9.3 or newer, installed with pipx, e.g.
   `pipx install --python python3.13 signal-export==3.9.3`
-  (older versions have an attachment-decryption crash)
-- rclone (optional, only for upload)
-- On macOS 26, Homebrew needs the Command Line Tools: `xcode-select --install`
-- On the first run, macOS asks for your Keychain password for "Signal Safe Storage". Choose **Allow**.
+  (older versions have an attachment-decryption crash). Set `SIGEXPORT` if it is not on `PATH`.
+- **Signal Desktop** installed and linked to your phone, with the history you want synced to it.
+- **rclone** (optional, only if you set `REMOTE` for the upload).
+- **Key store access.** sigexport decrypts Signal's database key through the OS key store:
+  - macOS: Keychain. On the first run macOS asks for your password for "Signal Safe Storage"; choose **Allow**. (Homebrew on macOS 26 needs the Command Line Tools: `xcode-select --install`.)
+  - Linux: the backend in Signal's `config.json` `safeStorageBackend`: `gnome_libsecret` (needs `secret-tool`, from libsecret-tools) or `kwallet`/`kwallet5`/`kwallet6` (needs `kwallet-query`). Unlock the keyring first. Other backends (e.g. `basic_text`) need sigexport's `--password`.
+  - Windows: DPAPI. Run as the same Windows user that runs Signal; the key comes from Signal's `Local State` file, which `prepare_source.py` copies along.
+- **Free disk:** a chat with no size estimate only starts with at least `MIN_FREE_GIB` free (default 8 GiB); with an estimate it needs about 1.15 x the estimate plus `ABORT_FREE_GIB` (default 3). Below `ABORT_FREE_GIB` the running sigexport is stopped and the chat is queued for retry. Plan for roughly the raw size of your attachments while exporting (dedup shrinks it afterwards).
+- **Viewer:** any modern browser; it opens from `file://` with no server.
 
 ## Quick start
 
@@ -97,32 +102,34 @@ All screenshots use synthetic test data.
 git clone https://github.com/phobicdotno/sigexport-browser.git
 cd sigexport-browser
 
-# 1. read-only working copy of the Signal data (quits Signal first)
-pipeline/prepare_source.sh                       # -> ~/SignalExport/_src
+# Windows: use `py` (or `python`) instead of `python3`; paths work the same.
+
+# 1. working copy of the Signal data (quit Signal first; on macOS it is quit for you)
+python3 pipeline/prepare_source.py                  # -> ~/SignalExport/_work/src
 
 # 2. optional: estimate the savings
-~/.local/pipx/venvs/signal-export/bin/python tools/measure_duplicates.py ~/SignalExport/_src
+~/.local/pipx/venvs/signal-export/bin/python tools/measure_duplicates.py ~/SignalExport/_work/src
 
 # 3. export everything (resumable: just run it again after an interruption)
-SIGNAL_SRC=~/SignalExport/_src OUT_DIR=~/SignalExport pipeline/export_all.sh
+python3 pipeline/export_all.py --out ~/SignalExport   # uses _work/src if prepared, else auto-detects Signal
 #   optional upload + verification:
-#   REMOTE=myremote:Signal-export SIGNAL_SRC=... pipeline/export_all.sh
+#   python3 pipeline/export_all.py --remote myremote:Signal-export
 
 # 4. build and open the browser
-cp -R viewer ~/SignalExport/viewer
+cp -R viewer ~/SignalExport/viewer                  # or copy the folder in Explorer
 python3 ~/SignalExport/viewer/build_viewer.py      # root = parent folder by default
-open ~/SignalExport/viewer/index.html
+# open ~/SignalExport/viewer/index.html in a browser (macOS: open, Linux: xdg-open, Windows: start)
 ```
 
-Settings: `SIGNAL_SRC`, `OUT_DIR` (default `~/SignalExport`), `REMOTE` (empty means no upload), `MIN_FREE_GIB` (6), `ABORT_FREE_GIB` (4), `TRANSFERS` (2), `SIGEXPORT`, `STATE_DIR`. Each one can also be passed as a flag; see `pipeline/export_all.sh --help`.
+Settings: `SIGNAL_SRC`, `OUT_DIR` (default `~/SignalExport`), `REMOTE` (empty means no upload), `MEDIA_LAYOUT` (`central`), `MIN_FREE_GIB` (8), `ABORT_FREE_GIB` (3), `TRANSFERS` (2), `SIGEXPORT`, `STATE_DIR`. Each one can also be passed as a flag; see `python3 pipeline/export_all.py --help`. `pipeline/export_all.sh` and `pipeline/prepare_source.sh` are thin POSIX-shell wrappers around the Python scripts.
 
 To personalise the viewer, copy `viewer/config.example.js` to `viewer/config.js`. See `viewer/themes/README.md` for themes.
 
 ## Install and usage per OS
 
-The viewer build (`viewer/build_viewer.py`) is plain Python 3.10+ with no dependencies and is tested in CI on Linux, Windows and macOS. The shell pipeline above is macOS-first; on Linux and Windows run `sigexport` directly (or the pipeline once it supports your OS) and then build the viewer.
+The viewer build (`viewer/build_viewer.py`) is plain Python 3.10+ with no dependencies and is tested in CI on Linux, Windows and macOS. The pipeline (Quick start above) runs on all three OSes and auto-detects the Signal Desktop folder; you can also run `sigexport` directly and then build the viewer.
 
-Signal Desktop data folder (pass it to `sigexport --source`):
+Signal Desktop data folder (auto-detected by the pipeline; pass it to `--src` or `sigexport --source` to override):
 
 | OS | Signal Desktop folder |
 |---|---|
@@ -147,16 +154,16 @@ open ~/SignalExport/viewer/index.html
 ### Linux
 
 ```sh
-sudo apt install pipx rclone      # or dnf / pacman; rclone is optional
+sudo apt install pipx rclone libsecret-tools   # or dnf / pacman; rclone is optional
 pipx install signal-export==3.9.3
-SRC=~/.config/Signal              # Flatpak / Snap: see the table above
-sigexport --source "$SRC" ~/SignalExport/001_all
+python3 pipeline/prepare_source.py             # Flatpak / Snap folders are auto-detected
+python3 pipeline/export_all.py
 cp -R viewer ~/SignalExport/viewer
 python3 ~/SignalExport/viewer/build_viewer.py
 xdg-open ~/SignalExport/viewer/index.html
 ```
 
-On Linux, `sigexport` reads the database key from the desktop keyring (GNOME Keyring / KWallet). Unlock it first.
+On Linux, `sigexport` reads the database key from the desktop keyring (GNOME Keyring via `secret-tool`, or KWallet via `kwallet-query`). Unlock it first.
 
 ### Windows (PowerShell)
 
@@ -164,13 +171,16 @@ On Linux, `sigexport` reads the database key from the desktop keyring (GNOME Key
 winget install Python.Python.3.13 Rclone.Rclone   # rclone is optional
 py -m pip install --user pipx; py -m pipx ensurepath   # then open a new terminal
 pipx install signal-export==3.9.3
-sigexport --source "$env:APPDATA\Signal" "$HOME\SignalExport\001_all"
+py pipeline\prepare_source.py                          # %APPDATA%\Signal is auto-detected
+py pipeline\export_all.py
 Copy-Item -Recurse viewer "$HOME\SignalExport\viewer"
 py "$HOME\SignalExport\viewer\build_viewer.py"
 Start-Process "$HOME\SignalExport\viewer\index.html"
 ```
 
-Keep the export folder short (for example `C:\SignalExport`). Windows paths over 260 characters break in some tools. The build handles them, but rclone and Explorer may not. Optional upload: `rclone copy "$HOME\SignalExport" myremote:Signal-export`.
+Keep the export folder short (for example `C:\SignalExport`). Windows paths over 260 characters break in some tools. The build handles them, but rclone and Explorer may not. Optional upload: `py pipeline\export_all.py --remote myremote:Signal-export` (copies and verifies each chat).
+
+On Windows the database key is unwrapped with DPAPI, so run this as the Windows user that uses Signal.
 
 ### Opening the viewer
 
@@ -261,7 +271,7 @@ After each chat is exported, `pipeline/dedup.py` hashes every file in its `media
 
 ## Limitations
 
-- macOS only for the pipeline (Signal paths, `df`, `osascript`).
+- Real-world runs so far are macOS 26 only; Linux and Windows are covered by CI with synthetic data, not yet by a real account. Only macOS quits Signal for you (`osascript`); elsewhere quit it yourself.
 - The export is a snapshot. New messages need a new run.
 - Dedup works on exact bytes. A re-encoded copy of the same video is not detected.
 - Large files are hashed in full, so the first run is I/O bound.

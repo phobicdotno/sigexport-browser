@@ -1,5 +1,8 @@
 # Changelog
 
+## v0.1.25 (build 13) — 2026-11-06
+- README: Requirements rewritten for the cross-platform Python pipeline (macOS/Linux/Windows with CI on all three, real runs on macOS 26 only; Python 3.10+, sigexport 3.9.x via pipx, Signal Desktop linked, optional rclone, Keychain / gnome-libsecret or kwallet / DPAPI key-store notes, MIN_FREE_GIB 8 / ABORT_FREE_GIB 3 disk guidance, any browser); Quick start and per-OS sections use export_all.py / prepare_source.py (work dir ~/SignalExport/_work/src), stale defaults (6/4), duplicate Windows section and the "macOS only" limitation fixed
+
 ## v0.1.24 (build 12) — 2026-11-06
 - README: new "Phone backup (Android)" section (researched 2026-11-06): backup v2 format and recovery key, legacy `.backup` files deleted on upgrade (copy them off first), SignalBackups layout, copying with adb/MTP and checking the file count, decrypting with libsignal / SignalTool / signalbackup-tools, risks, sources
 - README: merging phone-only history into the archive (dedup, central `Media/`) marked as planned, not built
