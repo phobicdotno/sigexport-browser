@@ -36,7 +36,7 @@ def load_index(p):
 # sigexport builds attachment paths with pathlib (create.py: Path("media") / file_name), so on
 # Windows they come out as ./media\file (JSON: media\\file). Accept both separators and always
 # write forward slashes back.
-MD_RE = re.compile(r'(\]\()\./media[/\\]([^\n]*?)(\))(?=[ \t]*(?:\n|$|!?\[))')
+MD_RE = re.compile(r'(\]\()\./media[/\\]([^\n]*?)(\))(?=[ \t]*(?:\r?\n|$|!?\[))')
 HT_RE = re.compile(r'((?:src|href)=")\./media[/\\]([^"]*)(")')
 JS_RE = re.compile(r'("path": ")media(?:/|\\\\)((?:[^"\\]|\\.)*)(")')
 PREFIX = {'md': './media/', 'html': './media/', 'json': 'media/'}
@@ -230,7 +230,7 @@ def linkcheck(root, base, indexp=None, idxdir=None):
     print(json.dumps(out))
     return 0 if missing == 0 else 1
 
-MD_RE2 = re.compile(r'\]\((\.{1,2}[/\\][^\n]*?)\)(?=[ \t]*(?:\n|$|!?\[))')
+MD_RE2 = re.compile(r'\]\((\.{1,2}[/\\][^\n]*?)\)(?=[ \t]*(?:\r?\n|$|!?\[))')
 HT_RE2 = re.compile(r'(?:src|href)="([^"]*)"')
 JS_RE2 = re.compile(r'"path": "((?:[^"\\]|\\.)*)"')
 

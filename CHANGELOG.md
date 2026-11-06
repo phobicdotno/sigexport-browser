@@ -1,5 +1,8 @@
 # Changelog
 
+## v0.1.22 (build 11) — 2026-11-06
+- dedup.py/central_media.py: markdown link regexes accept CRLF line endings (Windows chat.md), fixes the Windows CI failures
+
 ## v0.1.21 (build 10) — 2026-11-06
 - Central media layout (new default, `--media-layout central` / `MEDIA_LAYOUT`): pipeline/central_media.py files each unique file once in OUT_DIR/Media/<Type>/ (ext/MIME, stickers -> Pictures, `_<md5[:8]>` on name clash), rewrites chat.md/index.html/data.json to ../../Media/<Type>/<file>, link-checks, removes media/; `per-chat` keeps the old layout
 - Crash-safe per file: hard-link backup + journal (_state/central_journal) before anything moves, move -> index -> rewrite -> delete copies, idempotent resume on the next run, rollback from backup on failure; state compatible with a migrated export (done.txt NNN, central media_index.tsv)
