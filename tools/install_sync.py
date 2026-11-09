@@ -160,7 +160,8 @@ def applescript(a, token, lang):
         qs(a.out / "_state"), qs(a.python), qs(sync_py), qs(a.out), " --upload" if a.remote else "",
         qs(a.out / "_state" / "sync_launch.log"))
     if a.remote:
-        direct = "export REMOTE=%s PATH=%s; %s" % (qs(a.remote), qs(PATH_ENV), direct)
+        direct = "export REMOTE=%s PATH=%s PRUNE_SIGNAL_DAYS=%d; %s" % (
+            qs(a.remote), qs(PATH_ENV), max(0, a.prune_signal_days), direct)
     post = "curl -s -m 10 -o /dev/null -w '%%{http_code}' -X POST -H %s http://127.0.0.1:%d/sync || true" % (
         qs("X-Sync-Token: " + token), a.port)
     status = "%s %s --print-status --out %s --since " % (qs(a.python), qs(helper), qs(a.out))
@@ -221,6 +222,8 @@ def install(a):
     env = {"PATH": PATH_ENV}
     if a.remote:
         env["REMOTE"] = a.remote
+        if a.prune_signal_days > 0:  # prune only ever runs after --upload + rclone check passed
+            env["PRUNE_SIGNAL_DAYS"] = str(a.prune_signal_days)
     hp = AGENTS / (LABEL_HELPER + ".plist")
     args = [a.python, str(REPO / "tools" / "sync_helper.py"), "--out", str(out), "--port", str(a.port),
             "--python", a.python, "--sync", str(REPO / "pipeline" / "sync.py")] + (["--upload"] if a.remote else [])
@@ -284,6 +287,8 @@ def main():
     ap.add_argument("--python", default="/opt/homebrew/bin/python3.13")
     ap.add_argument("--lang", choices=sorted(MSG), help="notification language (default: from viewer/config.js)")
     ap.add_argument("--min-battery", type=int, default=30)
+    ap.add_argument("--prune-signal-days", type=int, default=30,
+                    help="sync.py PRUNE_SIGNAL_DAYS for the helper, app and 03:00 job (0 = off; needs --remote)")
     ap.add_argument("--rotate-token", action="store_true")
     ap.add_argument("--uninstall", action="store_true")
     a = ap.parse_args()

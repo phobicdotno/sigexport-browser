@@ -115,7 +115,9 @@ class Run:
         self.state.mkdir(parents=True, exist_ok=True)
         self.st = {"state": "running", "step": "start", "progress": 0.0, "started": now_iso(),
                    "finished": None, "added_messages": 0, "new_media": 0, "new_chats": 0,
+                   "pruned_files": 0, "pruned_bytes": 0,
                    "message": "dry run" if dry else ""}
+        self.upload_ok = False  # set by sync() only when rclone copy AND check --one-way passed
         self.write_status()
 
     def log(self, msg: str) -> None:
@@ -535,7 +537,70 @@ def sync(run: Run, tmp: Path, upload: bool, remote: str | None) -> int:
         run.log(f"upload rc={rc} check rc={crc}")
         if rc or crc:
             failed.append(-2)
+        else:
+            run.upload_ok = True
     return 1 if failed else 0
+
+
+# ---------------------------------------------------------------- prune Signal Desktop
+def signal_dir() -> Path:
+    from platform_util import find_signal_dir
+    sig = Path(os.environ["SIGNAL_DIR"]).expanduser() if os.environ.get("SIGNAL_DIR") else find_signal_dir()
+    if sig is None:
+        raise SystemExit("Signal Desktop folder not found")
+    return sig
+
+
+def run_prune(run: Run, days: int, remote: str, dry: bool) -> dict:
+    """Fresh read-only sql copy (Signal may run), then prune_signal.py under the sigexport python."""
+    import prepare_source as PS
+    sig = signal_dir()
+    work = run.out / "_work" / "prune_src"
+    shutil.rmtree(work, ignore_errors=True)
+    (work).mkdir(parents=True, exist_ok=True)
+    PS.copy_sql_live(sig / "sql", work / "sql")
+    cmd = [sigexport_python(), str(HERE / "prune_signal.py"), "--sql-src", str(work), "--signal-dir", str(sig),
+           "--out", str(run.out), "--days", str(days), "--remote", remote] + (["--dry-run"] if dry else [])
+    env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
+    r = subprocess.run(cmd, capture_output=True, text=True, env=env)
+    shutil.rmtree(work, ignore_errors=True)
+    for line in r.stdout.splitlines():
+        if line.startswith("PRUNE_SUMMARY "):
+            return json.loads(line[len("PRUNE_SUMMARY "):])
+    raise RuntimeError(f"prune_signal rc={r.returncode}")
+
+
+def maybe_prune(run: Run, days: int, upload: bool, sync_rc: int, remote: str | None, dry: bool = False,
+                runner=run_prune):
+    """Real prune only after a successful sync AND upload check in this run. Returns the summary or None."""
+    if not days or days < 1:
+        return None
+    if not dry and not (upload and sync_rc == 0 and run.upload_ok and not run.dry):
+        run.log("prune skipped: needs --upload with a successful sync and rclone check in this run")
+        return None
+    if not remote:
+        run.log("prune skipped: no REMOTE")
+        return None
+    run.step("prune", 0.95)
+    try:
+        s = runner(run, days, remote, dry)
+    except Exception as ex:  # noqa: BLE001  prune never fails the sync
+        run.log(f"prune failed ({type(ex).__name__}); nothing deleted")
+        return None
+    run.st["pruned_files"], run.st["pruned_bytes"] = int(s.get("pruned_files", 0)), int(s.get("pruned_bytes", 0))
+    if dry:
+        run.st["prune_dry_run"] = True
+    run.log(f"prune{' dry-run' if dry else ''} days={days} candidates={s.get('candidates', 0)} "
+            f"files={run.st['pruned_files']} bytes={run.st['pruned_bytes']} "
+            f"kept={json.dumps(s.get('kept', {}), sort_keys=True)}")
+    run.write_status()
+    return s
+
+
+def drop_staging(s) -> None:
+    st = (s or {}).get("staging")
+    if st and "_work" in Path(st).parts and "pruned" in Path(st).parts:
+        shutil.rmtree(st, ignore_errors=True)
 
 
 def linkcheck(chat: Path) -> int:
@@ -564,6 +629,11 @@ def main(argv=None) -> int:
     ap.add_argument("--from-export", help=argparse.SUPPRESS)  # tests: use an existing sigexport dir
     ap.add_argument("--min-free", type=float, default=float(e("MIN_FREE_GIB", "8")))
     ap.add_argument("--abort-free", type=float, default=float(e("ABORT_FREE_GIB", "3")))
+    ap.add_argument("--prune-signal-days", type=int, default=int(e("PRUNE_SIGNAL_DAYS", "0") or 0),
+                    help="after a successful sync + upload check, delete Signal Desktop attachment files "
+                         "older than N days that are verified in the archive and on the remote (0 = off)")
+    ap.add_argument("--prune-dry-run", action="store_true",
+                    help="only report what the prune would delete (read-only, no sync, no upload)")
     a = ap.parse_args(argv)
     out = Path(a.out).expanduser().resolve()
     if a.setup_key:
@@ -577,7 +647,13 @@ def main(argv=None) -> int:
         print("sync already running", file=sys.stderr)
         return EX_BUSY
     run = Run(out, a.dry_run)
+    pruned = None
     try:
+        if a.prune_dry_run:
+            run.step("prune", 0.5)
+            pruned = maybe_prune(run, a.prune_signal_days or 30, False, 0, e("REMOTE"), dry=True)
+            run.end(pruned is not None, "prune dry run" + ("" if pruned is not None else " failed, see sync.log"))
+            return 0 if pruned is not None else 1
         run.step("disk", 0.02)
         if free_gib(out) < a.min_free:
             raise SystemExit(f"free space below MIN_FREE_GIB={a.min_free}")
@@ -591,6 +667,7 @@ def main(argv=None) -> int:
             run_export(run, src, tmp, a.abort_free)
         run.step("merge", 0.3)
         rc = sync(run, tmp, a.upload, e("REMOTE"))
+        pruned = maybe_prune(run, a.prune_signal_days, a.upload, rc, e("REMOTE"))
         run.end(rc == 0, ("dry run: " if a.dry_run else "") + ("ok" if rc == 0 else "some chats failed, see sync.log"))
         return rc
     except SystemExit as ex:
@@ -601,6 +678,7 @@ def main(argv=None) -> int:
         run.log(f"error {type(ex).__name__}")
         return 1
     finally:
+        drop_staging(pruned)  # after the run summary (sync_status.json + sync.log) is written
         try:
             if lock.read_text().strip() == str(os.getpid()):
                 lock.unlink()

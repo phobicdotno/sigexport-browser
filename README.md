@@ -288,6 +288,19 @@ tools/install_sync.sh --out ~/SignalExport --remote myremote:Signal-archive   # 
 - **Dock app.** `~/Applications/Signal Sync.app` (built with `osacompile`, generic icon). It asks the helper to start a sync, or runs `sync.py` directly in the background if the helper is down, and shows a notification at start and when it finishes. To put it in the Dock, open `~/Applications` in Finder (Cmd+Shift+H, then Applications) and drag **Signal Sync** onto the Dock.
 - **Daily at 03:00.** LaunchAgent `no.phobic.sigexport-browser.sync` (`StartCalendarInterval` Hour 3, Minute 0) runs `tools/sync_scheduled.sh`, which calls `sync.py --upload --quit-signal`. If the Mac was asleep at 03:00, launchd runs the job once on wake. `man launchd.plist` says: "Unlike cron which skips job invocations when the computer is asleep, launchd will start the job the next time the computer wakes up. If multiple intervals transpire before the computer is woken, those events will be coalesced into one event upon wake from sleep." The run is skipped (and logged) when the Mac is on battery below 30 % (`pmset -g batt`, `MIN_BATTERY`). Log: `_state/sync_scheduled.log`.
 
+### Prune Signal Desktop attachments (opt-in)
+
+`sync.py --prune-signal-days N` (or env `PRUNE_SIGNAL_DAYS=N`, default off) frees disk space **in Signal Desktop on this Mac only**. The installer sets `PRUNE_SIGNAL_DAYS=30` for the helper, the Dock app and the 03:00 job when `--remote` is given (`--prune-signal-days 0` turns it off). Safety rules:
+
+- It runs only after the sync **and** the upload's `rclone check --one-way` both succeeded in the same run. Without `--upload`, after a failed chat, or after a failed upload/check, nothing is pruned.
+- Only message attachment files under `attachments.noindex/` whose message is older than N days. Stickers, avatars, drafts, temp, downloads and badges are never touched, nor is a file still used by a newer message, a quote, a preview, or a thumbnail/screenshot.
+- Every file must pass all three checks, or it is kept and the reason counted: (1) it decrypts in memory with its `localKey` (HMAC checked; sha256 must equal `plaintextHash` when stored), (2) the plaintext md5 is in `_state/media_index.tsv` and that archive file exists with the same md5, (3) the same file is on the remote with the same md5 (one `rclone md5sum REMOTE/Media` listing per run).
+- Verified files are moved to `_work/pruned/<date>/` first; that folder is deleted after the run summary is written. Signal can stay running (the DB is read from a fresh copy).
+- `sync_status.json` gets `pruned_files` and `pruned_bytes`; `sync.log` gets the counts, bytes and kept reasons. File names are never logged.
+- `sync.py --prune-dry-run` (needs `REMOTE`) runs no sync and no upload; it only reports what would be deleted (default N = 30).
+
+Afterwards Signal Desktop shows those old photos and files as blurred placeholders (it may offer to re-download them while the server still has them). Your phone is not affected, and the archive and remote keep every file.
+
 Check: `launchctl print gui/$UID/no.phobic.sigexport-browser.sync` shows the calendar trigger. Uninstall: `tools/install_sync.sh --uninstall` removes both LaunchAgents, the app and the token; the archive is not touched.
 
 ## Privacy

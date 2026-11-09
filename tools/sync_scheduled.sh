@@ -7,11 +7,14 @@
 #   SYNC_PY      path to pipeline/sync.py
 #   SYNC_ARGS    extra args (default "--upload --quit-signal")
 #   MIN_BATTERY  percent (default 30)
+#   PRUNE_SIGNAL_DAYS  prune Signal Desktop attachments older than N days after a verified
+#                upload (default 30, 0 = off; sync.py only prunes with --upload + passed rclone check)
 OUT="${OUT:-$HOME/SignalExport}"
 PY="${PY:-/opt/homebrew/bin/python3.13}"
 SYNC_PY="${SYNC_PY:-$(cd "$(dirname "$0")/.." && pwd)/pipeline/sync.py}"
 SYNC_ARGS="${SYNC_ARGS:---upload --quit-signal}"
 MIN_BATTERY="${MIN_BATTERY:-30}"
+export PRUNE_SIGNAL_DAYS="${PRUNE_SIGNAL_DAYS:-30}"
 mkdir -p "$OUT/_state"
 LOG="$OUT/_state/sync_scheduled.log"
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S') $*" >> "$LOG"; }
@@ -25,7 +28,7 @@ if command -v pmset >/dev/null 2>&1; then
   fi
 fi
 
-log "start: $PY $SYNC_PY --out $OUT $SYNC_ARGS"
+log "start: $PY $SYNC_PY --out $OUT $SYNC_ARGS (PRUNE_SIGNAL_DAYS=$PRUNE_SIGNAL_DAYS)"
 # shellcheck disable=SC2086
 "$PY" "$SYNC_PY" --out "$OUT" $SYNC_ARGS >> "$LOG" 2>&1
 RC=$?
