@@ -130,5 +130,38 @@ class SyncTest(unittest.TestCase):
         self.assertEqual(S.new_messages(old, [msg("2026-01-01T11:00:00", "A", "y", server_ts=5)]), [])
 
 
+    def test_upload_excludes_sync_config_token(self):
+        pats = S.load_upload_excludes()
+        for want in ("viewer/sync_config.js", "_work/**", "*.pid", "_state/sync.lock", "_state/sync.log",
+                     "_state/sync_status.json", "_state/upload.log", "**/.build_tmp/**"):
+            self.assertIn(want, pats)
+        bad = self.root / "ex.txt"
+        bad.write_text("_work/**\n# viewer/sync_config.js\n", encoding="utf-8")
+        with self.assertRaises(SystemExit):
+            S.load_upload_excludes(bad)
+        # the real --upload path passes the exclude to both rclone copy and rclone check
+        write_chat(self.exp / "A", [msg("2026-01-01T10:00:00.000000", "A", "one")])
+        calls, real = [], S.subprocess.run
+
+        def fake(cmd, *a, **kw):
+            if cmd and cmd[0] == "rclone":
+                calls.append(cmd)
+                return S.subprocess.CompletedProcess(cmd, 0)
+            return real(cmd, *a, **kw)
+        old_env = os.environ.get("REMOTE")
+        os.environ["REMOTE"] = "dummy:remote"
+        S.subprocess.run = fake
+        try:
+            self.run_sync("--upload")
+        finally:
+            S.subprocess.run = real
+            if old_env is None:
+                os.environ.pop("REMOTE", None)
+            else:
+                os.environ["REMOTE"] = old_env
+        self.assertEqual([c[1] for c in calls], ["copy", "check"])
+        for c in calls:
+            self.assertIn("viewer/sync_config.js", [c[i + 1] for i, x in enumerate(c) if x == "--exclude"])
+
 if __name__ == "__main__":
     unittest.main()

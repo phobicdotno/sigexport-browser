@@ -48,10 +48,17 @@ EX_BUSY = 75
 WINDOW = 60.0
 SERVER_KEYS = ("server_ts", "serverTimestamp", "sent_at")
 MD_HEAD = re.compile(r"^\[(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d)\] ")
-UPLOAD_EXCLUDES = ["_work/**", "**/.build_tmp/**", ".build_tmp/**", "**/*.new/**", "*.new/**",
-                   "**/*.old/**", "*.old/**", "*.new", "*.old", "_state/upload.log",
-                   "_state/upload_check.log", "_state/upload.pid", "_state/upload_status",
-                   "_state/sync.lock", "_state/sync.log", "_state/sync_status.json"]
+UPLOAD_EXCLUDES_FILE = HERE.parent / "tools" / "upload_excludes.txt"
+
+
+def load_upload_excludes(path: Path = UPLOAD_EXCLUDES_FILE) -> list[str]:
+    """rclone exclude patterns from tools/upload_excludes.txt (single source of truth, shared
+    with upload.sh). Missing file or missing sync_config.js entry -> refuse (fail closed)."""
+    pats = [ln.strip() for ln in path.read_text(encoding="utf-8").splitlines()
+            if ln.strip() and not ln.lstrip().startswith("#")]
+    if "viewer/sync_config.js" not in pats:
+        raise SystemExit(f"{path}: viewer/sync_config.js not excluded, refusing to upload")
+    return pats
 
 
 def now_iso():
@@ -519,7 +526,7 @@ def sync(run: Run, tmp: Path, upload: bool, remote: str | None) -> int:
         run.step("upload", 0.9)
         if not remote:
             raise SystemExit("--upload needs REMOTE")
-        ex = [a for e in UPLOAD_EXCLUDES for a in ("--exclude", e)]
+        ex = [a for e in load_upload_excludes() for a in ("--exclude", e)]
         rc = subprocess.run(["rclone", "copy", str(out), remote, *ex, "--transfers", "4", "--checkers", "8",
                              "--retries", "5", "--log-file", str(state / "upload.log"), "--log-level", "INFO"]).returncode
         with open(state / "upload_check.log", "w") as f:

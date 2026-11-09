@@ -19,3 +19,4 @@ failed.txt
 chats.txt
 *.pid
 viewer/sync_config.js
+viewer/build_stamp.js

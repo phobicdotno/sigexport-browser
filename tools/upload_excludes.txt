@@ -1,3 +1,27 @@
 # rclone --exclude-from list for uploads of the archive: local-only files that must never leave the Mac.
+# Single source of truth: read by pipeline/sync.py (--upload) and ~/SignalExport/_work/upload.sh.
 # sync_config.js holds the sync helper token (tools/install_sync.py).
 viewer/sync_config.js
+# work dirs / build temp dirs
+_work/**
+**/.build_tmp/**
+.build_tmp/**
+**/*.new/**
+*.new/**
+**/*.old/**
+*.old/**
+*.new
+*.old
+# pid files anywhere (upload.pid, export.pid, caffeinate.pid, ...)
+*.pid
+# sync / upload / helper state, logs and lock
+_state/upload.log
+_state/upload_check.log
+_state/upload.pid
+_state/upload_status
+_state/sync.lock
+_state/sync.log
+_state/sync_status.json
+_state/sync_scheduled.log
+_state/sync_helper.log
+_state/sync_sigexport.out

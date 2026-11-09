@@ -1,5 +1,8 @@
 # Changelog
 
+## v0.1.39 (build 18) — 2026-11-09
+- Upload excludes: tools/upload_excludes.txt is the single source of truth (sync.py --upload reads it and refuses to upload if viewer/sync_config.js, the helper token, is not listed; also covers _work/**, build temp dirs, *.pid, sync/upload state, log and lock files); test that the token file is excluded from rclone copy and check; viewer/build_stamp.js gitignored
+
 ## v0.1.38 (build 17) — 2026-11-09
 - sync.py: chat matching fixed (dry run had 32 existing chats as "new"): conversation id via `_state/conv_map.tsv` first, then the real subfolder names inside NNN_*/ (multi-subfolder folders like 076 handled); ambiguous matches and phone-only folders (NNN_phone_*) are skipped and logged, never created or overwritten; only a cid known nowhere gets a new NNN (recorded in conv_map.tsv + folders.tsv)
 - sync_export.py: builds/completes `_state/conv_map.tsv` (cid, NNN folder, subfolder) with the completeness_check.py rules (id_map.tsv, phone folders, fix_names folder name, exact date multiset, >=90% date overlap); `conv-map SRC OUT` mode; test for cid/rename, two-subfolder, phone-only and ambiguous folders
