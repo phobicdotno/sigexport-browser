@@ -25,7 +25,7 @@ class SyncHelperTest(unittest.TestCase):
         (self.out / "viewer").mkdir()
         (self.out / "viewer" / "sync_config.js").write_text(
             "window.SYNC_CONFIG={port:0,token:'%s'};\n" % TOKEN, encoding="utf-8")
-        os.environ["SYNC_STUB_SECONDS"] = "1.5"
+        os.environ["SYNC_STUB_SECONDS"] = "5"  # outlives the 1.5 s start probe, even on slow CI
         runner = sync_helper.Runner(str(self.out), sys.executable, str(STUB), upload=True)
         # bind to an ephemeral port, then rebuild the handler with that port for Host/Origin checks
         self.httpd = sync_helper.serve(str(self.out), 0, runner)
@@ -36,7 +36,7 @@ class SyncHelperTest(unittest.TestCase):
     def tearDown(self):
         self.httpd.shutdown()
         self.httpd.server_close()
-        deadline = time.time() + 10
+        deadline = time.time() + 20
         while time.time() < deadline:  # let the stub finish before deleting its folder
             st = sync_helper.read_status(str(self.out))[0]
             if st.get("state") in ("done", "idle", "failed"):
@@ -78,7 +78,7 @@ class SyncHelperTest(unittest.TestCase):
         code, _, body = self.call("POST", "/sync")
         self.assertEqual((code, body), (202, {"started": True}))
         self.assertEqual(self.call("POST", "/sync")[0], 409)
-        deadline, st = time.time() + 15, {}
+        deadline, st = time.time() + 30, {}
         while time.time() < deadline:
             st = self.call("GET", "/status")[2]
             if st.get("state") == "done":

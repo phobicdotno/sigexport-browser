@@ -1,5 +1,8 @@
 # Changelog
 
+## v0.1.36 (build 16) — 2026-11-09
+- tests/test_sync_helper.py: stub runs 5 s so the busy check cannot race a fast finish (Windows py3.10 CI)
+
 ## v0.1.35 (build 15) — 2026-11-09
 - tools/sync_helper.py: 127.0.0.1-only helper (default port 8765) with POST /sync (starts pipeline/sync.py detached, 409 when busy via own child, flock on _state/sync.lock or exit 75) and GET /status (_state/sync_status.json); X-Sync-Token required, Host check, Origin only null/own, CORS + private-network preflight
 - Viewer: Sync button next to the title, shown only when local viewer/sync_config.js exists; polls /status every 2 s with step and progress bar, "+N messages, +M media" when done, clean "helper not running" / bad-token / failed messages, en + nb strings, resumes a sync started elsewhere; neutral theme tokens only
