@@ -46,6 +46,7 @@ from platform_util import free_gib, safe_component  # noqa: E402
 
 EX_BUSY = 75
 WINDOW = 60.0
+DEFER_DAYS = 30  # new messages whose attachment file is not in the source yet wait this long
 SERVER_KEYS = ("server_ts", "serverTimestamp", "sent_at")
 MD_HEAD = re.compile(r"^\[(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d)\] ")
 UPLOAD_EXCLUDES_FILE = HERE.parent / "tools" / "upload_excludes.txt"
@@ -336,15 +337,28 @@ def nnn_dirs(out: Path) -> dict[int, Path]:
 
 
 # ---------------------------------------------------------------- per-chat merge
-def plan_chat(src_inner: Path, dst_inner: Path | None) -> dict:
-    """Returns {'add': [(ts, line, msg)], 'md': [(ts, block)], 'media': [rel paths]}."""
+def plan_chat(src_inner: Path, dst_inner: Path | None, now: float | None = None) -> dict:
+    """Returns {'add': [(ts, line, msg)], 'md': [(ts, block)], 'media': [rel paths], 'deferred': n}."""
     new = read_jsonl(src_inner / "data.json")
     old = read_jsonl(dst_inner / "data.json") if dst_inner else []
     add = new_messages([m for _s, m in old], [m for _s, m in new])
     src_md = md_blocks(D.rd(str(src_inner / "chat.md"))) if (src_inner / "chat.md").exists() else []
     pending = [(t, h, txt) for t, h, txt in src_md if h]
-    md, media, lines = [], [], []
+    md, media, lines, deferred = [], [], [], 0
+    now = time.time() if now is None else now
     for m in add:
+        absent = [a for a in m.get("attachments") or [] if isinstance(a, dict) and a.get("path")
+                  and not a.get("missing_kind") and not a["path"].startswith("../")
+                  and not (src_inner / a["path"]).is_file()]
+        if absent:
+            # sigexport listed a file the source does not have (Signal Desktop has not downloaded it
+            # yet): a recent message waits for a later sync so it lands with its file; an old one is
+            # added with the attachment flagged, never as a new broken ref.
+            if now - ts(m) < DEFER_DAYS * 86400:
+                deferred += 1
+                continue
+            m = {**m, "attachments": [{**a, "missing_kind": "absent_at_sync"} if a in absent else a
+                                      for a in m["attachments"]]}
         lines.append((ts(m), json.dumps(m, ensure_ascii=False), m))
         head = md_header_for(m)
         for k, (t, h, txt) in enumerate(pending):
@@ -357,7 +371,7 @@ def plan_chat(src_inner: Path, dst_inner: Path | None) -> dict:
             if rel and not a.get("missing_kind") and not rel.startswith("../") \
                     and (src_inner / rel).is_file():
                 media.append(rel)
-    return {"add": lines, "md": md, "media": sorted(set(media)), "old": old}
+    return {"add": lines, "md": md, "media": sorted(set(media)), "old": old, "deferred": deferred}
 
 
 def apply_chat(root: Path, top: str, inner: str, src_inner: Path, plan: dict, central) -> None:
@@ -385,6 +399,20 @@ def verify_append_only(before: list[str], after_p: Path) -> bool:
     after = [s for s, _m in read_jsonl(after_p)]
     it = iter(after)
     return all(any(b == a for a in it) for b in before)  # before is a subsequence of after
+
+
+class MergeCheck(RuntimeError):
+    """A post-merge check failed; the message names the check and counts only (no chat names)."""
+
+
+def failure_detail(e: BaseException) -> str:
+    """Loggable reason for a failed chat: our own check messages verbatim; for anything else the
+    type plus errno/strerror only, since str(e) of OS errors carries paths (= chat names)."""
+    if isinstance(e, MergeCheck):
+        return f"{type(e).__name__}: {e}"
+    if isinstance(e, OSError):
+        return f"{type(e).__name__} errno={e.errno} {e.strerror or ''}".rstrip()
+    return type(e).__name__
 
 
 # ---------------------------------------------------------------- source / export
@@ -478,6 +506,9 @@ def sync(run: Run, tmp: Path, upload: bool, remote: str | None) -> int:
             idx = int(top[:3])
             dst_inner = out / top / sub
         plan = plan_chat(src_inner, dst_inner if dst_inner.is_dir() else None)
+        if plan["deferred"]:
+            run.st["deferred_messages"] = run.st.get("deferred_messages", 0) + plan["deferred"]
+            run.log(f"chat NNN={idx:03d} deferred={plan['deferred']} (attachment not in source yet)")
         if not plan["add"]:
             continue
         run.st["added_messages"] += len(plan["add"])
@@ -496,10 +527,10 @@ def sync(run: Run, tmp: Path, upload: bool, remote: str | None) -> int:
                 shutil.copytree(out / top, backup, copy_function=os.link, symlinks=True)
             apply_chat(out, top, dst_inner.name, src_inner, plan, central)
             if not verify_append_only(before, dst_inner / "data.json"):
-                raise RuntimeError("append-only check failed")
+                raise MergeCheck("append-only check: an existing data.json line changed or moved")
             bad = linkcheck(out / top) - broken_before  # only refs this merge broke
             if bad:
-                raise RuntimeError(f"link check: {len(bad)} new broken refs")
+                raise MergeCheck(f"link check: {len(bad)} new broken refs")
             if is_new:
                 with open(state / "conv_map.tsv", "a", encoding="utf-8") as f:
                     f.write(f"{cid}\t{top}\t{dst_inner.name}\n")
@@ -509,7 +540,7 @@ def sync(run: Run, tmp: Path, upload: bool, remote: str | None) -> int:
             changed.append(top)
             shutil.rmtree(backup, ignore_errors=True)
         except Exception as e:  # restore the chat exactly as it was
-            run.log(f"chat NNN={idx:03d} failed ({type(e).__name__}); restoring backup")
+            run.log(f"chat NNN={idx:03d} failed ({failure_detail(e)}); restoring backup")
             if backup.exists():
                 shutil.rmtree(out / top, ignore_errors=True)
                 os.replace(backup, out / top)

@@ -85,6 +85,45 @@ class SyncTest(unittest.TestCase):
         self.assertIn("newer", after[-1])
         self.assertEqual(len(S.linkcheck(self.out / "001_A")), 1)
 
+    def test_new_message_with_attachment_not_in_source_is_deferred_not_broken(self):
+        # sigexport lists media/<file> but Signal Desktop has not downloaded it: the merge used to
+        # write the ref, the link check failed and the whole chat was rolled back (RuntimeError).
+        import time as _t
+        recent = _t.strftime("%Y-%m-%dT%H:%M:%S.000000", _t.localtime(_t.time() - 3600))
+        new = self.old + [msg("2026-01-03T09:00:00.000000", "A", "newer"),
+                          msg(recent, "A", "fresh pic",
+                              attachments=[{"name": "y.jpg", "path": "media/y.jpg", "missing_kind": None}])]
+        write_chat(self.exp / "A", new)
+        self.assertEqual(self.run_sync(), 0)
+        after = (self.out / "001_A" / "A" / "data.json").read_text(encoding="utf-8").splitlines()
+        self.assertEqual(len(after), 4)
+        self.assertIn("newer", after[-1])
+        st = json.loads((self.out / "_state" / "sync_status.json").read_text())
+        self.assertEqual((st["state"], st["added_messages"], st["deferred_messages"]), ("done", 1, 1))
+        # once the file is there, the next sync adds it with its media
+        (self.exp / "A" / "media").mkdir()
+        (self.exp / "A" / "media" / "y.jpg").write_bytes(b"y")
+        self.assertEqual(self.run_sync(), 0)
+        after = (self.out / "001_A" / "A" / "data.json").read_text(encoding="utf-8").splitlines()
+        self.assertEqual(len(after), 5)
+        self.assertEqual(S.linkcheck(self.out / "001_A"), set())
+
+    def test_old_message_with_absent_attachment_is_flagged(self):
+        write_chat(self.exp / "A", self.old + [msg("2020-05-01T09:00:00.000000", "A", "ancient pic",
+                   attachments=[{"name": "z.jpg", "path": "media/z.jpg", "missing_kind": None}])])
+        self.assertEqual(self.run_sync(), 0)
+        after = (self.out / "001_A" / "A" / "data.json").read_text(encoding="utf-8").splitlines()
+        self.assertEqual(len(after), 4)
+        self.assertEqual(json.loads(after[0])["attachments"][0]["missing_kind"], "absent_at_sync")
+        self.assertEqual(S.linkcheck(self.out / "001_A"), set())
+
+    def test_failure_detail_logs_check_not_paths(self):
+        self.assertEqual(S.failure_detail(S.MergeCheck("link check: 1 new broken refs")),
+                         "MergeCheck: link check: 1 new broken refs")
+        d = S.failure_detail(FileNotFoundError(2, "No such file", "/x/007_Secret Name/a"))
+        self.assertNotIn("Secret", d)
+        self.assertIn("errno=2", d)
+
     def test_new_chat_gets_next_nnn_and_dry_run(self):
         write_chat(self.exp / "Zed", [msg("2026-02-01T10:00:00.000000", "Zed", "hi")])
         (self.exp / "_cids.tsv").write_text("cid-z\tZed\n")

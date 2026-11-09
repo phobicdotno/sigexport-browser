@@ -1,5 +1,8 @@
 # Changelog
 
+## v0.1.47 (build 25) — 2026-11-09
+- Sync: a new message whose attachment sigexport lists but Signal Desktop has not downloaded yet (file absent from the export) no longer rolls back the whole chat with "link check: 1 new broken refs" (root cause of NNN 186/070 failing); messages younger than 30 days are deferred to a later sync (logged as deferred=N, `deferred_messages` in sync_status.json), older ones are added with the attachment flagged `missing_kind: absent_at_sync`; failed-chat log lines now name the check and counts (MergeCheck: …) and, for OS errors, only type + errno, never paths or chat names; tests
+
 ## v0.1.46 (build 24) — 2026-11-09
 - Viewer version label: tiny muted "v0.1.46" (10px, theme --sub colour) centred under the avatar, tooltip "v0.1.46 (build 24) · data 09.11 20:05"; build_viewer.py writes `__VIEWER_VERSION` (repo VERSION or viewer/VERSION, else "dev") and `__BUILD_TIME` into build_stamp.js; tools/install_sync.py `copy_viewer_files()` sets `CODE_VERSION` in the copied viewer.js, writes viewer/VERSION and also copies build_viewer.py; when the polled stamp's version differs from the running viewer.js the label turns accent "new version – press F5" / "ny versjon – trykk F5" (click reloads)
 
