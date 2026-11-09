@@ -583,10 +583,13 @@ window.__openChat=openChat;window.__search=function(v){tools(true,true);$('searc
 // fullscreen or a text field is in use (retried on every poll until idle).
 var STAMP0=window.__BUILD_STAMP||null,stale=false;
 // ---- version label under the avatar: CODE_VERSION is set when tools/install_sync.py copies viewer.js;
-// build_stamp.js carries the VERSION build_viewer.py saw. Differ -> this tab runs an old viewer.js: ask for F5.
+// build_stamp.js carries the VERSION build_viewer.py saw. Only a NEWER stamp means this tab runs an old
+// viewer.js (ask for F5); an older or equal one never does, so F5 can not loop.
 var CODE_VERSION='dev';
+function verNewer(a,b){var x=String(a).match(/\d+/g)||[],y=String(b).match(/\d+/g)||[];
+  for(var i=0;i<Math.max(x.length,y.length);i++){var p=+(x[i]||0),q=+(y[i]||0);if(p!==q)return p>q}return false}
 function updVer(){var lb=$('vlabel');if(!lb)return;var dv=window.__VIEWER_VERSION||'',bt=window.__BUILD_TIME||'',
-   cv=CODE_VERSION!=='dev'?CODE_VERSION:(dv||'dev'),old=CODE_VERSION!=='dev'&&dv&&dv!=='dev'&&dv!==CODE_VERSION,
+   cv=CODE_VERSION!=='dev'?CODE_VERSION:(dv||'dev'),old=CODE_VERSION!=='dev'&&dv&&dv!=='dev'&&verNewer(dv,CODE_VERSION),
    m=/^\d{4}-(\d\d)-(\d\d)T(\d\d:\d\d)/.exec(bt);
   lb.textContent=old?T('newVer'):(cv==='dev'?'dev':'v'+cv.split(' ')[0]);lb.classList.toggle('stale',!!old);
   lb.title=(cv==='dev'?'dev':'v'+cv)+(old?' → v'+dv:'')+(m?' · '+T('verData')+' '+m[2]+'.'+m[1]+' '+m[3]:'');

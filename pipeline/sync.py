@@ -364,7 +364,7 @@ def plan_chat(src_inner: Path, dst_inner: Path | None, now: float | None = None)
     add = new_messages([m for _s, m in old], [m for _s, m in new])
     src_md = md_blocks(D.rd(str(src_inner / "chat.md"))) if (src_inner / "chat.md").exists() else []
     pending = [(t, h, txt) for t, h, txt in src_md if h]
-    md, media, lines, deferred = [], [], [], 0
+    md, media, lines, deferred, deferred_ts = [], [], [], 0, []
     now = time.time() if now is None else now
     for m in add:
         absent = [a for a in m.get("attachments") or [] if isinstance(a, dict) and a.get("path")
@@ -376,6 +376,7 @@ def plan_chat(src_inner: Path, dst_inner: Path | None, now: float | None = None)
             # added with the attachment flagged, never as a new broken ref.
             if now - ts(m) < DEFER_DAYS * 86400:
                 deferred += 1
+                deferred_ts.append(ts(m))
                 continue
             m = {**m, "attachments": [{**a, "missing_kind": "absent_at_sync"} if a in absent else a
                                       for a in m["attachments"]]}
@@ -391,7 +392,8 @@ def plan_chat(src_inner: Path, dst_inner: Path | None, now: float | None = None)
             if rel and not a.get("missing_kind") and not rel.startswith("../") \
                     and (src_inner / rel).is_file():
                 media.append(rel)
-    return {"add": lines, "md": md, "media": sorted(set(media)), "old": old, "deferred": deferred}
+    return {"add": lines, "md": md, "media": sorted(set(media)), "old": old, "deferred": deferred,
+            "deferred_ts": deferred_ts}
 
 
 def apply_chat(root: Path, top: str, inner: str, src_inner: Path, plan: dict, central) -> None:
@@ -492,7 +494,22 @@ def want_full_export(state: Path, force: bool, now: float | None = None) -> str 
     return None
 
 
-def write_watermarks(state: Path, tmp: Path, failed_cids: set, deferred: dict, was_full: bool) -> int:
+def match_pending(items: list, times: list, tol: float = 600.0) -> list:
+    """Keep the pending candidates (msgid, sent_at ms) that are the nearest match (within tol s) of a
+    deferred message's timestamp (sigexport's date = min(sent_at, serverTimestamp)). No times or no
+    match: all candidates (safe: a resolvable one still triggers the re-export)."""
+    if not times:
+        return items
+    keep = []
+    for t in times:
+        best = min(items, key=lambda it: abs(it[1] / 1000 - t), default=None)
+        if best is not None and abs(best[1] / 1000 - t) <= tol and best not in keep:
+            keep.append(best)
+    return keep or items
+
+
+def write_watermarks(state: Path, tmp: Path, failed_cids: set, deferred: dict, was_full: bool,
+                     deferred_ts: dict | None = None) -> int:
     """New watermarks from this run's DB fingerprints (tmp/_fingerprints.tsv). Conversations whose
     merge failed get no watermark, so the next run exports them again (as if new). A deferred chat
     keeps its count plus the pending message list (tmp/_unavail.tsv), which the precheck uses to
@@ -530,7 +547,8 @@ def write_watermarks(state: Path, tmp: Path, failed_cids: set, deferred: dict, w
             rows.append(f"{c}\t{f}\t{o[1]}" + (f"\t{pend}" if o[1] and o[2] is not None else "") + "\n")
             continue
         n = deferred.get(c, 0)
-        rows.append(f"{c}\t{f}\t{n}" + (f"\t{unavail.get(c, '')}" if n else "") + "\n")
+        pend = SE.format_pending(match_pending(SE.parse_pending(unavail.get(c, "")), (deferred_ts or {}).get(c, [])))
+        rows.append(f"{c}\t{f}\t{n}" + (f"\t{pend}" if n else "") + "\n")
     p = state / WATERMARKS
     D.atomic_write(str(p), "".join(rows))
     return len(rows) - 1
@@ -688,7 +706,7 @@ def sync(run: Run, tmp: Path, upload: bool, remote: str | None) -> int:
     central = None if run.dry else CM.Central(str(out), str(state), str(out / "_work"))
     nxt = max(used | {0}) + 1
     changed, failed = [], []
-    failed_cids, deferred_by_cid = set(), {}
+    failed_cids, deferred_by_cid, deferred_ts = set(), {}, {}
     for i, src_inner in enumerate(chats):
         run.st["progress"] = round(0.3 + 0.5 * i / max(1, len(chats)), 3)
         name = src_inner.name
@@ -710,6 +728,7 @@ def sync(run: Run, tmp: Path, upload: bool, remote: str | None) -> int:
         if plan["deferred"]:
             if cid:
                 deferred_by_cid[cid] = plan["deferred"]
+                deferred_ts[cid] = plan.get("deferred_ts", [])
             run.st["deferred_messages"] = run.st.get("deferred_messages", 0) + plan["deferred"]
             run.log(f"chat NNN={idx:03d} deferred={plan['deferred']} (attachment not in source yet)")
         if not plan["add"]:
@@ -755,8 +774,9 @@ def sync(run: Run, tmp: Path, upload: bool, remote: str | None) -> int:
         run.write_status()
     run.step("viewer", 0.85)
     if not run.dry and changed:
-        r = subprocess.run([sys.executable, str(HERE.parent / "viewer" / "build_viewer.py"), "--root", str(out),
-                            "--out", str(out / "viewer") if (out / "viewer").is_dir() else str(HERE.parent / "viewer")],
+        vdir = out / "viewer" if (out / "viewer").is_dir() else HERE.parent / "viewer"
+        builder = vdir / "build_viewer.py" if (vdir / "build_viewer.py").is_file() else HERE.parent / "viewer" / "build_viewer.py"
+        r = subprocess.run([sys.executable, str(builder), "--root", str(out), "--out", str(vdir)],
                            capture_output=True, text=True)
         if r.returncode != 0:
             run.log("viewer rebuild failed")
@@ -764,7 +784,7 @@ def sync(run: Run, tmp: Path, upload: bool, remote: str | None) -> int:
     if not run.dry and -1 not in failed:
         sel = tmp / "_selected.tsv"
         was_full = sel.is_file() and sel.read_text(encoding="utf-8").strip() == "*"
-        n = write_watermarks(state, tmp, failed_cids, deferred_by_cid, was_full)
+        n = write_watermarks(state, tmp, failed_cids, deferred_by_cid, was_full, deferred_ts)
         if n >= 0:
             run.log(f"watermarks={n} full={int(was_full)} failed={len(failed_cids)} deferred={len(deferred_by_cid)}")
     if upload and not run.dry:
@@ -794,6 +814,29 @@ def sync(run: Run, tmp: Path, upload: bool, remote: str | None) -> int:
         else:
             run.upload_ok = True
     return 1 if failed else 0
+
+
+def deploy_viewer(out: Path, repo: Path | None = None) -> str | None:
+    """If the repo VERSION differs from OUT/viewer/VERSION, copy the viewer code into OUT/viewer
+    (install_sync.copy_viewer_files: never config.js, sync_config.js or themes) so the deployed
+    viewer.js CODE_VERSION and the build stamp agree. Returns the new version or None."""
+    repo = Path(repo) if repo else HERE.parent
+    viewer = out / "viewer"
+    if not viewer.is_dir():
+        return None
+    try:
+        want = (repo / "VERSION").read_text(encoding="utf-8").strip()
+        have = (viewer / "VERSION").read_text(encoding="utf-8").strip() if (viewer / "VERSION").is_file() else ""
+    except OSError:
+        return None
+    if not want or want == have:
+        return None
+    sys.path.insert(0, str(repo / "tools"))
+    try:
+        import install_sync
+    finally:
+        sys.path.pop(0)
+    return install_sync.copy_viewer_files(viewer, repo)
 
 
 # ---------------------------------------------------------------- prune Signal Desktop
@@ -913,6 +956,13 @@ def main(argv=None) -> int:
             pruned = maybe_prune(run, a.prune_signal_days or 30, False, 0, e("REMOTE"), dry=True)
             run.end(pruned is not None, "prune dry run" + ("" if pruned is not None else " failed, see sync.log"))
             return 0 if pruned is not None else 1
+        if not a.dry_run:
+            try:
+                v = deploy_viewer(out)
+                if v:
+                    run.log(f"viewer code updated to v{v.split(' ')[0]}")
+            except Exception as ex:  # noqa: BLE001  never fail a sync over the viewer copy
+                run.log(f"viewer code update failed ({type(ex).__name__})")
         run.step("disk", 0.02)
         if free_gib(out) < a.min_free:
             raise SystemExit(f"free space below MIN_FREE_GIB={a.min_free}")

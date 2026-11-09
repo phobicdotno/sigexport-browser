@@ -190,9 +190,8 @@ def format_pending(items) -> str:
     return ",".join(f"{m}@{int(t)}" for m, t in items)
 
 
-ATT_SQL = ("SELECT m.conversationId, m.id, m.sent_at, a.path FROM messages m "
-           "JOIN message_attachments a ON a.messageId = m.id "
-           "WHERE a.attachmentType = 'attachment' AND a.editHistoryIndex = -1 AND {where}")
+ATT_SQL = ("SELECT path FROM message_attachments WHERE messageId = ? AND editHistoryIndex = -1 "
+           "AND attachmentType = 'attachment'")  # primary-key lookup; a JOIN made SQLite scan the table
 
 
 def _has_att_table(cur) -> bool:
@@ -200,22 +199,31 @@ def _has_att_table(cur) -> bool:
     return cur.fetchone() is not None
 
 
+def _att_paths(cur, mid):
+    cur.execute(ATT_SQL, (mid,))
+    return [r[0] for r in cur.fetchall()]
+
+
+def _present(root, path) -> bool:
+    return bool(path) and (root / str(path).replace("\\", "/")).is_file()
+
+
 def unavailable(cur, src, since_ms: int, cids=None) -> dict:
     """{cid: [(msgid, sent_at)]}: messages sent since since_ms with an attachment whose file is not
-    in SRC/attachments.noindex yet (no path, or the path's file does not exist). These are the
-    messages the merge defers. One query plus one stat per recent attachment."""
+    in SRC/attachments.noindex yet (no path, or the path's file does not exist): the candidates for
+    what the merge defers (sync.py keeps only the ones matching a deferred message)."""
     if not _has_att_table(cur):
         return {}
     root = Path(src) / "attachments.noindex"
-    cur.execute(ATT_SQL.format(where="m.sent_at >= ?"), (int(since_ms),))
+    cur.execute("SELECT conversationId, id, sent_at FROM messages WHERE sent_at >= ? AND hasAttachments = 1",
+                (int(since_ms),))
     res = {}
-    for cid, mid, sent, path in cur.fetchall():
+    for cid, mid, sent in cur.fetchall():
         if cids is not None and cid not in cids:
             continue
-        if not path or not (root / str(path).replace("\\", "/")).is_file():
-            lst = res.setdefault(cid, [])
-            if (mid, sent) not in lst:
-                lst.append((mid, sent))
+        paths = _att_paths(cur, mid)
+        if paths and not all(_present(root, p) for p in paths):
+            res.setdefault(cid, []).append((mid, sent))
     return res
 
 
@@ -232,9 +240,8 @@ def pending_ready(cur, src, pending, now_ms: int) -> bool:
     for mid, sent in pending:
         if now_ms - sent >= (DEFER_DAYS * 86400 + AGE_OUT_MARGIN) * 1000:
             return True
-        cur.execute(ATT_SQL.format(where="m.id = ?"), (mid,))
-        rows = cur.fetchall()
-        if not rows or all(p and (root / str(p).replace("\\", "/")).is_file() for _c, _m, _s, p in rows):
+        paths = _att_paths(cur, mid)
+        if not paths or all(_present(root, p) for p in paths):
             return True
     return False
 

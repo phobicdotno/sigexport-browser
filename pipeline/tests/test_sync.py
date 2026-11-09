@@ -239,7 +239,8 @@ class SyncTest(unittest.TestCase):
     def _att_db(self, src):
         import sqlite3
         db = sqlite3.connect(":memory:")
-        db.execute("CREATE TABLE messages (id TEXT, conversationId TEXT, received_at INTEGER, sent_at INTEGER)")
+        db.execute("CREATE TABLE messages (id TEXT, conversationId TEXT, received_at INTEGER, sent_at INTEGER, "
+                   "hasAttachments INTEGER)")
         db.execute("CREATE TABLE message_attachments (messageId TEXT, path TEXT, attachmentType TEXT, "
                    "editHistoryIndex INTEGER)")
         (src / "attachments.noindex" / "ab").mkdir(parents=True)
@@ -251,7 +252,7 @@ class SyncTest(unittest.TestCase):
         src = self.root / "src"
         db = self._att_db(src)
         now = int(time.time() * 1000)
-        db.execute("INSERT INTO messages VALUES ('m1','big',5,?)", (now - 3600_000,))
+        db.execute("INSERT INTO messages VALUES ('m1','big',5,?,1)", (now - 3600_000,))
         db.execute("INSERT INTO message_attachments VALUES ('m1','ab/f1','attachment',-1)")
         cur = db.cursor()
         un = SE.unavailable(cur, src, now - 86400_000)
@@ -270,6 +271,12 @@ class SyncTest(unittest.TestCase):
         self.assertFalse(SE.pending_ready(cur, src, [("m1", now - 3600_000)], now))
         self.assertTrue(SE.pending_ready(cur, src, None, now))        # pre-0.1.50 watermark row
         self.assertTrue(SE.pending_ready(cur, src, [("gone", now)], now))  # message deleted
+
+    def test_pending_list_keeps_only_deferred_messages(self):
+        items = [("a", 1_000_000), ("b", 2_000_000), ("c", 3_000_500)]
+        self.assertEqual(S.match_pending(items, [3_000.0]), [("c", 3_000_500)])
+        self.assertEqual(S.match_pending(items, []), items)          # no times: keep all
+        self.assertEqual(S.match_pending(items, [99_999.0]), items)  # no match: keep all (safe)
 
     def test_watermarks_keep_pending_for_chats_not_exported(self):
         import sync_export as SE
@@ -318,6 +325,46 @@ class SyncTest(unittest.TestCase):
         self.assertEqual(calls, ["precheck"])
         status = json.loads((st / "sync_status.json").read_text())
         self.assertEqual((status["state"], status["message"]), ("done", "no changes"))
+
+    def test_deploy_viewer_when_repo_version_differs(self):
+        repo = Path(__file__).resolve().parents[2]
+        v = (repo / "VERSION").read_text(encoding="utf-8").strip()
+        vd = self.out / "viewer"
+        (vd / "themes").mkdir(parents=True)
+        (vd / "VERSION").write_text("0.1.47 (build 25)\n", encoding="utf-8")
+        (vd / "viewer.js").write_text("var CODE_VERSION='0.1.47 (build 25)';\n", encoding="utf-8")
+        for keep in ("config.js", "sync_config.js", "themes/t.css"):
+            (vd / keep).write_text("KEEP", encoding="utf-8")
+        self.assertEqual(S.deploy_viewer(self.out, repo), v)
+        self.assertEqual((vd / "VERSION").read_text(encoding="utf-8").strip(), v)
+        self.assertIn("var CODE_VERSION='%s';" % v, (vd / "viewer.js").read_text(encoding="utf-8"))
+        for keep in ("config.js", "sync_config.js", "themes/t.css"):
+            self.assertEqual((vd / keep).read_text(encoding="utf-8"), "KEEP")
+        self.assertIsNone(S.deploy_viewer(self.out, repo))  # same version: nothing copied
+        # the deployed builder stamps the deployed version, so stamp and CODE_VERSION agree
+        sys.path.insert(0, str(vd))
+        try:
+            import importlib
+            import build_viewer as BV
+            importlib.reload(BV)
+            self.assertEqual(BV.read_version(vd), v)
+        finally:
+            sys.path.remove(str(vd))
+            sys.modules.pop("build_viewer", None)
+
+    def test_viewer_stale_only_when_stamp_is_newer(self):
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("node not installed")
+        import re
+        import subprocess
+        js = (Path(__file__).resolve().parents[2] / "viewer" / "viewer.js").read_text(encoding="utf-8")
+        fn = re.search(r"function verNewer\(a,b\)\{.*?return false\}", js, re.S).group(0)
+        code = fn + ";console.log(JSON.stringify([verNewer('0.1.50 (build 28)','0.1.49 (build 27)')," \
+                    "verNewer('0.1.49 (build 27)','0.1.50 (build 28)'),verNewer('0.1.50 (build 28)','0.1.50 (build 28)')," \
+                    "verNewer('0.2.0','0.1.99')]))"
+        r = subprocess.run([node, "-e", code], capture_output=True, text=True)
+        self.assertEqual(json.loads(r.stdout), [True, False, False, True])
 
     def test_fingerprints_from_db(self):
         import sqlite3

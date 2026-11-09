@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.1.52 (build 29) — 2026-11-09
+- Fix the viewer stuck on "new version – press F5": sync rebuilt the viewer with the repo's build_viewer.py, which stamped the repo VERSION while the deployed `OUT/viewer/viewer.js` kept an older CODE_VERSION (sync never copied viewer code), so F5 reloaded the same old file forever. Each sync (not dry runs) now calls `install_sync.copy_viewer_files(OUT/viewer)` when the repo VERSION differs from `OUT/viewer/VERSION` (never config.js, sync_config.js or themes) and rebuilds with the deployed `OUT/viewer/build_viewer.py`; the stamp reads `OUT/viewer/VERSION`, so stamp and CODE_VERSION cannot disagree; the viewer asks for F5 only when the stamp is NEWER than its CODE_VERSION (never on equal/older, so no loop).
+
+## v0.1.51 (build 29) — 2026-11-09
+- Precheck: the deferred chats' pending list keeps only the messages the merge actually deferred (matched by timestamp; it held every recent message with a missing attachment, 96 and 80 for 1 deferred each), and the attachment checks use the message_attachments primary key instead of a JOIN that scanned the table (no-change precheck 11.6 s -> 0.4 s).
+
 ## v0.1.50 (build 28) — 2026-11-09
 - No-change sync in seconds: a new `precheck` step (`sync_export.py precheck`, no sigexport parsing) runs one aggregate query (count, max received_at, max rowid per conversation) against `_state/sync_watermarks.tsv`; with nothing new it ends `done` / "no changes" and skips export, merge, viewer, upload and prune (unless an earlier upload still owes files). Deferred chats are no longer re-exported every run: the watermark row now keeps the pending message ids (`msgid@sent_at`), and the chat is re-exported only once a pending attachment's file exists in `attachments.noindex`, the message is deleted, or it is past DEFER_DAYS + 1 day (then merged with `missing_kind`); old rows without the list are re-exported once. Changed chats are filtered in fetch_data's SQL (`WHERE conversationId IN (...)` via a cursor proxy), so other chats are never read or JSON-parsed (one small chat: 2.7-3.6 s -> 1.0-1.4 s export). Tests: no-change run skips export, deferred chat waits for its attachment, pending list carried over, SQL filter.
 

@@ -125,10 +125,13 @@ def swap_dir(new, dst):
         shutil.rmtree(old, ignore_errors=True)
 
 
-def read_version():
-    """Repo VERSION (repo/viewer/build_viewer.py -> repo/VERSION) or viewer/VERSION written by install_sync; else 'dev'."""
+def read_version(out=None):
+    """VERSION of the viewer code being stamped: OUT/VERSION (written by install_sync.copy_viewer_files
+    next to the deployed viewer.js) first, so the stamp always matches the deployed CODE_VERSION;
+    else this script's viewer/VERSION or the repo VERSION; else 'dev'."""
     here = Path(__file__).resolve().parent
-    for p in (here / 'VERSION', here.parent / 'VERSION'):
+    cands = ([Path(out) / 'VERSION'] if out else []) + [here / 'VERSION', here.parent / 'VERSION']
+    for p in cands:
         try:
             v = p.read_text(encoding='utf-8').strip()
         except OSError:
@@ -145,7 +148,7 @@ def write_stamp(out, nchats, nmsg, nmedia):
     now = datetime.now().isoformat(timespec='seconds')
     with open(tmp, 'w', encoding='utf-8', newline='\n') as f:
         f.write("window.__BUILD_STAMP='%s-%d-%d-%d';\n" % (now, nchats, nmsg, nmedia))
-        f.write("window.__VIEWER_VERSION=%s;window.__BUILD_TIME='%s';\n" % (json.dumps(read_version()), now))
+        f.write("window.__VIEWER_VERSION=%s;window.__BUILD_TIME='%s';\n" % (json.dumps(read_version(out)), now))
     os.replace(tmp, os.path.join(str(out), 'build_stamp.js'))
 
 
