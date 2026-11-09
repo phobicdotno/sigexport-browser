@@ -11,6 +11,10 @@
 - tools/sync_scheduled.sh: 03:00 wrapper running sync.py --upload --quit-signal, skips and logs when on battery below 30 % (pmset), logs to _state/sync_scheduled.log; viewer/sync_config.js gitignored and listed in tools/upload_excludes.txt
 - README "Sync" section (button, Dock app, 03:00 job with the man launchd.plist wake rule, merge-only / never removes anything, uninstall); tests/test_sync_helper.py against tests/fixtures/sync_stub.py
 
+## v0.1.31 (build 15) — 2026-11-09
+- sync.py: chat matching fixed (dry run had 32 existing chats as "new"): conversation id via `_state/conv_map.tsv` first, then the real subfolder names inside NNN_*/ (multi-subfolder folders like 076 handled); ambiguous matches and phone-only folders (NNN_phone_*) are skipped and logged, never created or overwritten; only a cid known nowhere gets a new NNN (recorded in conv_map.tsv + folders.tsv)
+- sync_export.py: builds/completes `_state/conv_map.tsv` (cid, NNN folder, subfolder) with the completeness_check.py rules (id_map.tsv, phone folders, fix_names folder name, exact date multiset, >=90% date overlap); `conv-map SRC OUT` mode; test for cid/rename, two-subfolder, phone-only and ambiguous folders
+
 ## v0.1.29 (build 14) — 2026-11-09
 - pipeline/sync.py: merge-only re-sync (`--out OUT [--upload] [--dry-run] [--quit-signal]`): full sigexport into OUT/_work/sync_tmp, chats matched to NNN by conversation id (id_map.tsv) then folder name (folders.tsv), new chats get the next NNN; only messages not already present (date+sender, same body within 60 s, or server timestamp) are inserted into data.json / chat.md, existing lines (phone-backup included) are never changed, missing old attachments are ignored; new media filed via central_media; hard-link backup, append-only + link check and restore per chat; viewer rebuild; optional rclone copy + check --one-way (REMOTE, copy only)
 - sync.py contract: lock OUT/_state/sync.lock (PID, busy -> exit 75), atomic OUT/_state/sync_status.json after every step, OUT/_state/sync.log (counts and NNN only), disk guard (MIN_FREE_GIB / ABORT_FREE_GIB)

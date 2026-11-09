@@ -80,7 +80,7 @@ class SyncTest(unittest.TestCase):
         self.assertFalse((self.out / "002_Zed").exists())
         self.assertEqual(self.run_sync(), 0)
         self.assertTrue((self.out / "002_Zed" / "Zed" / "data.json").is_file())
-        self.assertIn("2\tZed\tcid-z", (self.out / "_state" / "id_map.tsv").read_text())
+        self.assertIn("cid-z\t002_Zed\tZed", (self.out / "_state" / "conv_map.tsv").read_text())
         st = json.loads((self.out / "_state" / "sync_status.json").read_text())
         self.assertEqual(st["new_chats"], 1)
         self.assertEqual(self.run_sync(), 0)  # idempotent
@@ -93,6 +93,34 @@ class SyncTest(unittest.TestCase):
         (self.out / "_state" / "sync.lock").write_text("999999")  # stale
         self.assertEqual(self.run_sync(), 0)
         self.assertFalse((self.out / "_state" / "sync.lock").exists())
+
+    def test_conv_map_multi_subfolder_phone_and_ambiguous(self):
+        # 076-style folder with two subfolders, a phone-only folder, a renamed chat (cid match)
+        write_chat(self.out / "076_Two" / "P", [msg("2026-01-01T10:00:00.000000", "P", "p")])
+        write_chat(self.out / "076_Two" / "Q", [msg("2026-01-01T10:00:00.000000", "Q", "q")])
+        write_chat(self.out / "210_phone_32" / "phone_32", [msg("2026-01-01T10:00:00.000000", "X", "x")])
+        write_chat(self.out / "300_Dup" / "D", [msg("2026-01-01T10:00:00.000000", "D", "d")])
+        write_chat(self.out / "301_Dup" / "D", [msg("2026-01-01T10:00:00.000000", "D", "d")])
+        (self.out / "_state" / "conv_map.tsv").write_text(
+            "cid-p\t076_Two\tP\ncid-q\t076_Two\tQ\nphone:210_phone_32\t210_phone_32\tphone_32\n"
+            "cid-a\t001_A\tA\n")
+        later = "2026-03-01T10:00:00.000000"
+        write_chat(self.exp / "Q", [msg(later, "Q", "new q")])
+        write_chat(self.exp / "Renamed", [msg(later, "A", "new a")])     # cid-a under a new name
+        write_chat(self.exp / "phone_32", [msg(later, "X", "never")])    # no cid, phone folder
+        write_chat(self.exp / "D", [msg(later, "D", "ambiguous")])       # no cid, two folders
+        (self.exp / "_cids.tsv").write_text("cid-q\tQ\ncid-a\tRenamed\n")
+        self.assertEqual(self.run_sync(), 0)
+        self.assertIn("new q", (self.out / "076_Two" / "Q" / "data.json").read_text())
+        self.assertNotIn("new q", (self.out / "076_Two" / "P" / "data.json").read_text())
+        self.assertIn("new a", (self.out / "001_A" / "A" / "data.json").read_text())
+        self.assertNotIn("never", (self.out / "210_phone_32" / "phone_32" / "data.json").read_text())
+        for t in ("300_Dup", "301_Dup"):
+            self.assertNotIn("ambiguous", (self.out / t / "D" / "data.json").read_text())
+        self.assertEqual(sorted(p.name for p in self.out.iterdir() if p.name[:1].isdigit()),
+                         ["001_A", "076_Two", "210_phone_32", "300_Dup", "301_Dup"])
+        st = json.loads((self.out / "_state" / "sync_status.json").read_text())
+        self.assertEqual((st["added_messages"], st["new_chats"]), (2, 0))
 
     def test_matcher_rules(self):
         old = [msg("2026-01-01T10:00:00.123000", "A", "x", server_ts=5)]

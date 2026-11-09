@@ -5,8 +5,8 @@ Usage: python3 sync.py --out ~/SignalExport [--upload] [--dry-run] [--quit-signa
        python3 sync.py --setup-key            (one-time, interactive; see README "Sync")
 
 Steps: lock -> disk guard -> DB snapshot (OUT/_work/src) -> full sigexport into
-OUT/_work/sync_tmp -> per chat: match to NNN (conversation id via _state/id_map.tsv,
-else sigexport folder name via _state/folders.tsv, else new NNN) -> append messages that
+OUT/_work/sync_tmp -> per chat: match to NNN (conversation id via _state/conv_map.tsv,
+else the real subfolder name inside NNN_*/; ambiguous -> skip; unknown cid -> new NNN) -> append messages that
 are not in data.json yet -> hard-link backup, write, central media, link check (restore
 on failure) -> rebuild viewer -> optional rclone copy + check --one-way.
 
@@ -278,22 +278,43 @@ def md_header_for(m: dict) -> str:
 
 
 # ---------------------------------------------------------------- archive map
-def load_map(state: Path):
-    by_cid, by_name, used = {}, {}, set()
-    for line in D.rd(str(state / "id_map.tsv")).splitlines() if (state / "id_map.tsv").exists() else []:
-        p = line.split("\t")
-        if len(p) >= 3 and p[0].strip().isdigit():
-            by_cid[p[2].strip()] = int(p[0])
-            used.add(int(p[0]))
-    if (state / "folders.tsv").exists():
-        for line in D.rd(str(state / "folders.tsv")).splitlines():
-            p = line.split("\t")
-            if len(p) >= 3 and p[0].isdigit():
-                used.add(int(p[0]))
-                for f in p[2].split("|"):
-                    if f:
-                        by_name.setdefault(f, []).append(int(p[0]))
-    return by_cid, by_name, used
+def load_conv_map(state: Path) -> dict[str, list[tuple[str, str]]]:
+    """_state/conv_map.tsv: cid <TAB> NNN folder <TAB> chat subfolder (built by sync_export.py)."""
+    cmap: dict = {}
+    p = state / "conv_map.tsv"
+    if p.exists():
+        for line in D.rd(str(p)).splitlines():
+            q = line.split("\t")
+            if len(q) == 3 and q[0]:
+                cmap.setdefault(q[0], []).append((q[1], q[2]))
+    return cmap
+
+
+def resolve(name: str, cid: str | None, cmap: dict, subs: dict, owner_of: dict):
+    """-> ('existing', (top, sub)) | ('new', None) | ('skip', reason).
+    Conversation id first, then the real subfolder names inside NNN_*/; anything ambiguous is
+    skipped, phone-only folders are never touched; only a cid known nowhere becomes a new NNN."""
+    if cid and cid in cmap:
+        t = cmap[cid]
+        if len(t) != 1:
+            return "skip", "ambiguous cid"
+        target = t[0]
+    else:
+        cands = subs.get(name, [])
+        if len(cands) > 1:
+            return "skip", "ambiguous name"
+        if len(cands) == 1:
+            target = cands[0]
+            other = owner_of.get(target)
+            if cid and other and other != cid:
+                return "skip", "name belongs to another cid"
+        elif cid:
+            return "new", None
+        else:
+            return "skip", "no cid and no folder"
+    if (owner_of.get(target) or "").startswith("phone:"):
+        return "skip", "phone-only folder"
+    return "existing", target
 
 
 def nnn_dirs(out: Path) -> dict[int, Path]:
@@ -394,7 +415,7 @@ def run_export(run: Run, src: Path, tmp: Path, abort_free: float) -> None:
     py = sigexport_python()
     env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
     with open(run.state / "sync_sigexport.out", "w", encoding="utf-8") as out:
-        p = subprocess.Popen([py, str(HERE / "sync_export.py"), "export", str(src), str(tmp)],
+        p = subprocess.Popen([py, str(HERE / "sync_export.py"), "export", str(src), str(tmp), str(run.out)],
                              stdout=out, stderr=subprocess.STDOUT, env=env)
         while True:
             try:
@@ -411,9 +432,15 @@ def run_export(run: Run, src: Path, tmp: Path, abort_free: float) -> None:
 # ---------------------------------------------------------------- main sync
 def sync(run: Run, tmp: Path, upload: bool, remote: str | None) -> int:
     out, state = run.out, run.state
-    by_cid, by_name, used = load_map(state)
+    cmap = load_conv_map(state)
+    owner_of = {t: c for c, ts_ in cmap.items() for t in ts_}
     dirs = nnn_dirs(out)
-    used |= set(dirs)
+    subs: dict = {}
+    for idx_, d in dirs.items():
+        for sd in d.iterdir():
+            if sd.is_dir() and (sd / "data.json").is_file():
+                subs.setdefault(sd.name, []).append((d.name, sd.name))
+    used = set(dirs)
     cids = {}
     if (tmp / "_cids.tsv").exists():
         for line in D.rd(str(tmp / "_cids.tsv")).splitlines():
@@ -428,21 +455,19 @@ def sync(run: Run, tmp: Path, upload: bool, remote: str | None) -> int:
         run.st["progress"] = round(0.3 + 0.5 * i / max(1, len(chats)), 3)
         name = src_inner.name
         cid = cids.get(name)
-        idx = by_cid.get(cid) if cid else None
-        if idx is None:
-            cand = by_name.get(name, [])
-            if len(cand) > 1:
-                run.log(f"skip ambiguous name match -> NNN {sorted(cand)}")
-                continue
-            idx = cand[0] if cand else None
-        is_new = idx is None or idx not in dirs
-        if idx is None:
+        kind, target = resolve(name, cid, cmap, subs, owner_of)
+        if kind == "skip":
+            run.log(f"skip chat ({target})" + (f" NNN={target[0][:3]}" if isinstance(target, tuple) else ""))
+            continue
+        is_new = kind == "new"
+        if is_new:
             idx, nxt = nxt, nxt + 1
-        top = dirs[idx].name if idx in dirs else (f"{idx:03d}_{safe_component(name)}" if name else f"{idx:03d}_unnamed")
-        dst_inner = out / top / name
-        if not is_new and not dst_inner.is_dir():
-            subs = [d for d in (out / top).iterdir() if d.is_dir() and (d / "data.json").is_file()]
-            dst_inner = subs[0] if len(subs) == 1 else dst_inner
+            top = f"{idx:03d}_{safe_component(name)}" if name else f"{idx:03d}_unnamed"
+            dst_inner = out / top / name
+        else:
+            top, sub = target
+            idx = int(top[:3])
+            dst_inner = out / top / sub
         plan = plan_chat(src_inner, dst_inner if dst_inner.is_dir() else None)
         if not plan["add"]:
             continue
@@ -466,11 +491,10 @@ def sync(run: Run, tmp: Path, upload: bool, remote: str | None) -> int:
             if bad:
                 raise RuntimeError(f"link check: {bad} new broken refs")
             if is_new:
+                with open(state / "conv_map.tsv", "a", encoding="utf-8") as f:
+                    f.write(f"{cid}\t{top}\t{dst_inner.name}\n")
                 with open(state / "folders.tsv", "a", encoding="utf-8") as f:
                     f.write(f"{idx}\t{name}\t{dst_inner.name}\n")
-                if cid:
-                    with open(state / "id_map.tsv", "a", encoding="utf-8") as f:
-                        f.write(f"{idx}\t{top.split('_', 1)[1]}\t{cid}\n")
                 dirs[idx] = out / top
             changed.append(top)
             shutil.rmtree(backup, ignore_errors=True)
