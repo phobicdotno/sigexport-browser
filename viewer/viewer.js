@@ -13,7 +13,8 @@ var I18N={
   sub:'Archive · {n} messages · {m} photos/videos',loadFail:'Could not load data/{n}.js – rebuild the viewer.',
   deleted:'Deleted message',call:'Call',missed:'Missed call',unknownDate:'Unknown date',older:'Scroll up for older messages ({n})',
   noHits:'0 matches',noMedia:'No photos or videos in this chat.',prevHit:'Previous match',nextHit:'Next match',
-  zoom:'Zoom',smaller:'Smaller',larger:'Larger',close:'Close (Esc)',fullscreen:'Fullscreen (F)',prev:'Previous',next:'Next',gsearch:'Search all chats',home:'Home',none:'No matches',hitsN:'{n} matches',inChats:'in {n} chats',from:'From',to:'To',sender:'Sender',chatF:'Chat',all:'All',images:'Photos',video:'Video',audio:'Audio',files:'Files',links:'Links',backRes:'Back to results',newest:'Newest first',oldest:'Oldest first',relevance:'Relevance',searching:'Searching…',newer:'Scroll down for newer messages ({n})'},
+  zoom:'Zoom',smaller:'Smaller',larger:'Larger',close:'Close (Esc)',fullscreen:'Fullscreen (F)',prev:'Previous',next:'Next',gsearch:'Search all chats',home:'Home',none:'No matches',hitsN:'{n} matches',inChats:'in {n} chats',from:'From',to:'To',sender:'Sender',chatF:'Chat',all:'All',images:'Photos',video:'Video',audio:'Audio',files:'Files',links:'Links',backRes:'Back to results',newest:'Newest first',oldest:'Oldest first',relevance:'Relevance',searching:'Searching…',newer:'Scroll down for newer messages ({n})',
+  sync:'Sync new messages',syncStarting:'Starting sync…',syncRun:'Syncing: {step} · {p} %',syncDone:'+{n} messages, +{m} media',syncDoneChats:'+{n} messages, +{m} media, +{c} chats',syncBusy:'A sync is already running',syncFail:'Sync failed: {msg}',syncNoHelper:'Sync helper not running. Run tools/install_sync.py again.',syncAuth:'Sync helper rejected the token. Run tools/install_sync.py again.'},
  nb:{locale:'nb-NO',search:'Søk',searchChat:'Søk i samtalen',back:'Tilbake',media:'Media',messages:'Meldinger',
   pick:'Velg en samtale',pickHint:'Ingen samtaler? Kjør build_viewer.py på nytt etter flere eksporter.',readonly:'Arkiv – skrivebeskyttet',
   today:'I dag',yesterday:'I går',you:'Deg',youSubj:'Du',unavailable:'Media utilgjengelig',audioUnavailable:'Lyd utilgjengelig',
@@ -21,7 +22,8 @@ var I18N={
   sub:'Arkiv · {n} meldinger · {m} bilder/videoer',loadFail:'Kunne ikke laste data/{n}.js – bygg visningen på nytt.',
   deleted:'Slettet melding',call:'Anrop',missed:'Tapt anrop',unknownDate:'Ukjent dato',older:'Rull opp for eldre meldinger ({n})',
   noHits:'0 treff',noMedia:'Ingen bilder eller videoer i denne samtalen.',prevHit:'Forrige treff',nextHit:'Neste treff',
-  zoom:'Zoom',smaller:'Mindre',larger:'Større',close:'Lukk (Esc)',fullscreen:'Fullskjerm (F)',prev:'Forrige',next:'Neste',gsearch:'Søk i alle samtaler',home:'Hjem',none:'Ingen treff',hitsN:'{n} treff',inChats:'i {n} samtaler',from:'Fra',to:'Til',sender:'Avsender',chatF:'Samtale',all:'Alle',images:'Bilder',video:'Video',audio:'Lyd',files:'Filer',links:'Lenker',backRes:'Tilbake til resultater',newest:'Nyeste først',oldest:'Eldste først',relevance:'Relevans',searching:'Søker…',newer:'Rull ned for nyere meldinger ({n})'}
+  zoom:'Zoom',smaller:'Mindre',larger:'Større',close:'Lukk (Esc)',fullscreen:'Fullskjerm (F)',prev:'Forrige',next:'Neste',gsearch:'Søk i alle samtaler',home:'Hjem',none:'Ingen treff',hitsN:'{n} treff',inChats:'i {n} samtaler',from:'Fra',to:'Til',sender:'Avsender',chatF:'Samtale',all:'Alle',images:'Bilder',video:'Video',audio:'Lyd',files:'Filer',links:'Lenker',backRes:'Tilbake til resultater',newest:'Nyeste først',oldest:'Eldste først',relevance:'Relevans',searching:'Søker…',newer:'Rull ned for nyere meldinger ({n})',
+  sync:'Synkroniser nye meldinger',syncStarting:'Starter synkronisering…',syncRun:'Synkroniserer: {step} · {p} %',syncDone:'+{n} meldinger, +{m} media',syncDoneChats:'+{n} meldinger, +{m} media, +{c} samtaler',syncBusy:'En synkronisering kjører allerede',syncFail:'Synkronisering feilet: {msg}',syncNoHelper:'Synk-hjelperen kjører ikke. Kjør tools/install_sync.py på nytt.',syncAuth:'Synk-hjelperen avviste nøkkelen. Kjør tools/install_sync.py på nytt.'}
 };
 var LANG=I18N[CFG.lang]?CFG.lang:'en',L=I18N[LANG];
 function T(k,v){var s=L[k]!=null?L[k]:(I18N.en[k]!=null?I18N.en[k]:k);if(v)Object.keys(v).forEach(function(x){s=s.split('{'+x+'}').join(v[x])});return s}
@@ -455,6 +457,40 @@ window.addEventListener('keydown',function(e){if(e.key!=='Escape')return;
   home()},true);
 window.__home=home;
 window.__openChat=openChat;window.__search=function(v){tools(true,true);$('search').value=v;doSearch()};window.__openLB=openLB;
+
+// ---- re-sync (optional): sync_config.js (local only, written by tools/install_sync.py) holds
+// {port, token} for the 127.0.0.1 helper (tools/sync_helper.py). No config -> no button.
+// The helper only starts pipeline/sync.py; new data appears via the build_stamp auto-refresh below.
+(function(){
+  var SC=window.SYNC_CONFIG;if(!SC||!SC.token||!window.fetch)return;
+  var base='http://127.0.0.1:'+(+SC.port||8765),btn=$('syncbtn'),bar=$('syncbar'),timer=null,since=0,seenRun=false,hideT=null;
+  btn.hidden=false;
+  function req(m,p){return fetch(base+p,{method:m,headers:{'X-Sync-Token':SC.token},cache:'no-store'})
+    .then(function(r){return r.json().catch(function(){return {}}).then(function(j){return {code:r.status,j:j}})})}
+  function show(cls,msg,p){clearTimeout(hideT);bar.hidden=false;bar.className='syncbar'+(cls?' '+cls:'');$('syncmsg').textContent=msg;
+    $('syncfill').style.width=Math.round(Math.max(0,Math.min(1,p||0))*100)+'%';btn.classList.toggle('spin',!cls)}
+  function fade(ms){clearTimeout(hideT);hideT=setTimeout(function(){bar.hidden=true},ms)}
+  function stop(){clearInterval(timer);timer=null;btn.classList.remove('spin')}
+  function fail(e,code){stop();show('err',code===401||code===403?T('syncAuth'):e?T('syncFail',{msg:e}):T('syncNoHelper'))}
+  function fresh(s){var t=Date.parse(s.started||'');return seenRun||(!isNaN(t)&&t>=since-10000)}
+  function done(s){stop();var n=+s.added_messages||0,m=+s.new_media||0,c=+s.new_chats||0;
+    show('ok',T(c?'syncDoneChats':'syncDone',{n:n,m:m,c:c}));fade(20000)}
+  function onStatus(s){
+    if(s.state==='running'){seenRun=true;show('',T('syncRun',{step:s.step||'…',p:Math.round((+s.progress||0)*100)}),s.progress);return}
+    if(!fresh(s))return; // previous run's result; wait for this run to report
+    if(s.state==='done')done(s);else if(s.state==='failed')fail(s.message||'?')}
+  function poll(){req('GET','/status').then(function(r){if(r.code!==200)return fail(r.j.error,r.code);onStatus(r.j)},function(){fail()})}
+  function watch(){if(timer)return;timer=setInterval(poll,2000);poll()}
+  btn.addEventListener('click',function(){
+    if(timer)return;since=Date.now();seenRun=false;show('',T('syncStarting'),0);
+    req('POST','/sync').then(function(r){
+      if(r.code===202)return watch();
+      if(r.code===409){show('',T('syncBusy'),0);seenRun=true;return watch()}
+      fail(r.j.error,r.code)},function(){fail()})});
+  // on load: pick up a sync started elsewhere (Dock app, 03:00 job) or a result from just before a reload
+  req('GET','/status').then(function(r){if(r.code!==200)return;var s=r.j,f=Date.parse(s.finished||'');
+    if(s.state==='running'){seenRun=true;watch()}else if(s.state==='done'&&!isNaN(f)&&Date.now()-f<120000)done(s)},function(){});
+})();
 
 // ---- auto-refresh after a rebuild: poll build_stamp.js via a <script> tag (fetch is blocked on file://).
 // On change: save chat/scroll/tab/query to sessionStorage and reload; never while the lightbox,

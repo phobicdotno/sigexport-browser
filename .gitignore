@@ -18,3 +18,4 @@ done.txt
 failed.txt
 chats.txt
 *.pid
+viewer/sync_config.js

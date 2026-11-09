@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.1.35 (build 15) — 2026-11-09
+- tools/sync_helper.py: 127.0.0.1-only helper (default port 8765) with POST /sync (starts pipeline/sync.py detached, 409 when busy via own child, flock on _state/sync.lock or exit 75) and GET /status (_state/sync_status.json); X-Sync-Token required, Host check, Origin only null/own, CORS + private-network preflight
+- Viewer: Sync button next to the title, shown only when local viewer/sync_config.js exists; polls /status every 2 s with step and progress bar, "+N messages, +M media" when done, clean "helper not running" / bad-token / failed messages, en + nb strings, resumes a sync started elsewhere; neutral theme tokens only
+- tools/install_sync.py / install_sync.sh: idempotent install + --uninstall of the token (sync_config.js, mode 600, kept across runs), helper LaunchAgent no.phobic.sigexport-browser.helper (KeepAlive), daily LaunchAgent no.phobic.sigexport-browser.sync (StartCalendarInterval 03:00) and ~/Applications/Signal Sync.app (osacompile, generic drawn icon, ad hoc re-signed)
+- Signal Sync.app: asks the helper, falls back to running sync.py directly, notifications at start and finish (polls the status file)
+- tools/sync_scheduled.sh: 03:00 wrapper running sync.py --upload --quit-signal, skips and logs when on battery below 30 % (pmset), logs to _state/sync_scheduled.log; viewer/sync_config.js gitignored and listed in tools/upload_excludes.txt
+- README "Sync" section (button, Dock app, 03:00 job with the man launchd.plist wake rule, merge-only / never removes anything, uninstall); tests/test_sync_helper.py against tests/fixtures/sync_stub.py
+
 ## v0.1.29 (build 14) — 2026-11-09
 - pipeline/sync.py: merge-only re-sync (`--out OUT [--upload] [--dry-run] [--quit-signal]`): full sigexport into OUT/_work/sync_tmp, chats matched to NNN by conversation id (id_map.tsv) then folder name (folders.tsv), new chats get the next NNN; only messages not already present (date+sender, same body within 60 s, or server timestamp) are inserted into data.json / chat.md, existing lines (phone-backup included) are never changed, missing old attachments are ignored; new media filed via central_media; hard-link backup, append-only + link check and restore per chat; viewer rebuild; optional rclone copy + check --one-way (REMOTE, copy only)
 - sync.py contract: lock OUT/_state/sync.lock (PID, busy -> exit 75), atomic OUT/_state/sync_status.json after every step, OUT/_state/sync.log (counts and NNN only), disk guard (MIN_FREE_GIB / ABORT_FREE_GIB)

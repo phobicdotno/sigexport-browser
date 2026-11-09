@@ -222,3 +222,14 @@ mark.cur{background:var(--hitcur)}
 .side-head .me.homebtn{border-radius:50%}
 .homebtn:hover{opacity:.85}
 .homebtn:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
+/* re-sync button + status (only shown when sync_config.js from tools/install_sync.py is present) */
+.syncbar{flex:none;padding:6px 16px 10px;background:var(--bg);font-size:12.5px;color:var(--sub)}
+.syncmsg{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:5px}
+.syncprog{height:3px;border-radius:2px;background:var(--line);overflow:hidden}
+.syncprog i{display:block;height:100%;width:0;background:var(--accent);transition:width .4s}
+.syncbar.ok .syncprog,.syncbar.err .syncprog{display:none}
+.syncbar.ok .syncmsg{color:var(--accent);margin:0}
+.syncbar.err .syncmsg{color:var(--hitcur);white-space:normal;margin:0}
+#syncbtn.spin svg{animation:syncspin 1.2s linear infinite}
+@keyframes syncspin{to{transform:rotate(360deg)}}
+@media (prefers-reduced-motion:reduce){#syncbtn.spin svg{animation:none}}

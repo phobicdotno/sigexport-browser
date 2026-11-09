@@ -1,0 +1,3 @@
+# rclone --exclude-from list for uploads of the archive: local-only files that must never leave the Mac.
+# sync_config.js holds the sync helper token (tools/install_sync.py).
+viewer/sync_config.js

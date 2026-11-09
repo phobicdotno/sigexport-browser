@@ -274,6 +274,22 @@ After each chat: a hard-link backup is taken, every file is hashed, and a journa
 
 After each chat is exported, `pipeline/dedup.py` hashes every file in its `media/` folder with md5. A global index (`media_index.tsv`) maps hash to the first file seen. When a later file has the same hash, and the first copy still exists and still matches, the links in that chat's `chat.md`, `index.html` and `data.json` are rewritten to a relative path such as `../../012_Other/Other/media/video.mp4`. Each file is rewritten atomically, and the duplicate is deleted only after that. A link check then resolves every media link. If any link is broken, the chat is re-exported without dedup.
 
+## Sync
+
+Re-sync pulls messages that arrived after the first export into the archive. The sync engine is `pipeline/sync.py`; this section covers the three ways to start it on macOS. **Sync is merge-only: it adds new messages, media and chats and NEVER removes or rewrites anything already in the archive** (locally or on the remote). Only one sync runs at a time (`_state/sync.lock`, exit code 75 = already running). Progress is in `_state/sync_status.json`, the log in `_state/sync.log`.
+
+Install (idempotent, re-run any time):
+
+```bash
+tools/install_sync.sh --out ~/SignalExport --remote myremote:Signal-archive   # --remote optional = adds --upload
+```
+
+- **Sync button in the viewer.** A circular-arrows button next to the title, shown only when `viewer/sync_config.js` exists. It calls a small helper (`tools/sync_helper.py`, LaunchAgent `no.phobic.sigexport-browser.helper`, KeepAlive) on `127.0.0.1:8765`, then shows the step and progress every 2 s and ends with "+N messages, +M media". The viewer reloads itself through the build stamp. The helper listens on 127.0.0.1 only, requires the random token from `sync_config.js` in an `X-Sync-Token` header, and accepts only `Origin: null` (file://) or its own origin. `sync_config.js` is local only: gitignored and listed in `tools/upload_excludes.txt` (use it as `rclone --exclude-from`). If the helper is down, the button says so.
+- **Dock app.** `~/Applications/Signal Sync.app` (built with `osacompile`, generic icon). It asks the helper to start a sync, or runs `sync.py` directly in the background if the helper is down, and shows a notification at start and when it finishes. To put it in the Dock, open `~/Applications` in Finder (Cmd+Shift+H, then Applications) and drag **Signal Sync** onto the Dock.
+- **Daily at 03:00.** LaunchAgent `no.phobic.sigexport-browser.sync` (`StartCalendarInterval` Hour 3, Minute 0) runs `tools/sync_scheduled.sh`, which calls `sync.py --upload --quit-signal`. If the Mac was asleep at 03:00, launchd runs the job once on wake. `man launchd.plist` says: "Unlike cron which skips job invocations when the computer is asleep, launchd will start the job the next time the computer wakes up. If multiple intervals transpire before the computer is woken, those events will be coalesced into one event upon wake from sleep." The run is skipped (and logged) when the Mac is on battery below 30 % (`pmset -g batt`, `MIN_BATTERY`). Log: `_state/sync_scheduled.log`.
+
+Check: `launchctl print gui/$UID/no.phobic.sigexport-browser.sync` shows the calendar trigger. Uninstall: `tools/install_sync.sh --uninstall` removes both LaunchAgents, the app and the token; the archive is not touched.
+
 ## Privacy
 
 - Everything stays on your machine. The pipeline only reads the Signal folder and writes to `OUT_DIR`.
