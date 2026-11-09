@@ -488,6 +488,7 @@ def sync(run: Run, tmp: Path, upload: bool, remote: str | None) -> int:
             continue
         backup = out / "_work" / "sync_backup" / top
         before = [s for s, _m in plan["old"]]
+        broken_before = linkcheck(out / top) if (out / top).exists() else set()
         try:
             if (out / top).exists():
                 shutil.rmtree(backup, ignore_errors=True)
@@ -496,9 +497,9 @@ def sync(run: Run, tmp: Path, upload: bool, remote: str | None) -> int:
             apply_chat(out, top, dst_inner.name, src_inner, plan, central)
             if not verify_append_only(before, dst_inner / "data.json"):
                 raise RuntimeError("append-only check failed")
-            bad = linkcheck(out / top)
+            bad = linkcheck(out / top) - broken_before  # only refs this merge broke
             if bad:
-                raise RuntimeError(f"link check: {bad} new broken refs")
+                raise RuntimeError(f"link check: {len(bad)} new broken refs")
             if is_new:
                 with open(state / "conv_map.tsv", "a", encoding="utf-8") as f:
                     f.write(f"{cid}\t{top}\t{dst_inner.name}\n")
@@ -603,18 +604,18 @@ def drop_staging(s) -> None:
         shutil.rmtree(st, ignore_errors=True)
 
 
-def linkcheck(chat: Path) -> int:
-    """Number of refs (data.json attachment paths) in the chat that do not resolve, minus
-    the ones flagged missing by sigexport. Old refs that never resolved are not counted twice:
-    only refs to Media/ or media/ are checked."""
-    bad = 0
+def linkcheck(chat: Path) -> set:
+    """Set of (data.json, ref) for refs to Media/ or media/ in the chat that do not resolve,
+    skipping the ones flagged missing by sigexport. Callers diff it against the set taken
+    before the merge, so refs that were already broken never fail a sync."""
+    bad = set()
     for p in chat.rglob("data.json"):
         for _s, m in read_jsonl(p):
             for a in m.get("attachments") or []:
                 rel = a.get("path") or ""
                 if rel and not a.get("missing_kind") and ("Media/" in rel or rel.startswith("media/")):
                     if not (p.parent / rel).exists():
-                        bad += 1
+                        bad.add((str(p.relative_to(chat)), rel))
     return bad
 
 

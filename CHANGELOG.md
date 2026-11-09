@@ -1,5 +1,8 @@
 # Changelog
 
+## v0.1.41 (build 20) — 2026-11-09
+- Sync link check fix: linkcheck() now returns the set of broken (data.json, ref) targets and apply fails only on refs the merge newly broke (set taken before apply_chat); chats with pre-existing sigexport-missing attachments no longer fail and roll back; test for a chat with a pre-existing broken ref merging fine
+
 ## v0.1.40 (build 19) — 2026-11-09
 - Opt-in Signal Desktop prune (`sync.py --prune-signal-days N` / `PRUNE_SIGNAL_DAYS`, `--prune-dry-run`): after a successful sync + `rclone check --one-way` only, moves old message attachment files to `_work/pruned/<date>/` (deleted after the summary) when each one decrypts with its localKey (sha256 = plaintextHash), its md5 is in media_index.tsv with a matching archive file, and the remote has it with the same md5 (`pipeline/prune_signal.py`); files shared with newer/other rows are kept; `pruned_files` / `pruned_bytes` in sync_status.json, counts only in sync.log; installer + sync_scheduled.sh default 30 days; README safety rules; synthetic encrypted-fixture tests; CI installs pycryptodome
 

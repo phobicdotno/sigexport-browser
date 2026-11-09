@@ -73,6 +73,18 @@ class SyncTest(unittest.TestCase):
         self.assertEqual(self.run_sync(), 0)
         self.assertEqual((self.out / "001_A" / "A" / "data.json").read_text(encoding="utf-8"), self.before)
 
+    def test_preexisting_broken_refs_do_not_block_merge(self):
+        old = self.old + [msg("2026-01-01T10:20:00.000000", "A", "lost pic",
+                              attachments=[{"name": "gone.jpg", "path": "../../Media/Pictures/gone.jpg"}])]
+        write_chat(self.out / "001_A" / "A", old)
+        write_chat(self.exp / "A", old + [msg("2026-01-03T09:00:00.000000", "A", "newer")])
+        self.assertEqual(len(S.linkcheck(self.out / "001_A")), 1)
+        self.assertEqual(self.run_sync(), 0)
+        after = (self.out / "001_A" / "A" / "data.json").read_text(encoding="utf-8").splitlines()
+        self.assertEqual(len(after), 5)
+        self.assertIn("newer", after[-1])
+        self.assertEqual(len(S.linkcheck(self.out / "001_A")), 1)
+
     def test_new_chat_gets_next_nnn_and_dry_run(self):
         write_chat(self.exp / "Zed", [msg("2026-02-01T10:00:00.000000", "Zed", "hi")])
         (self.exp / "_cids.tsv").write_text("cid-z\tZed\n")
