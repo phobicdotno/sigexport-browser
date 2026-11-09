@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.1.29 (build 14) — 2026-11-09
+- pipeline/sync.py: merge-only re-sync (`--out OUT [--upload] [--dry-run] [--quit-signal]`): full sigexport into OUT/_work/sync_tmp, chats matched to NNN by conversation id (id_map.tsv) then folder name (folders.tsv), new chats get the next NNN; only messages not already present (date+sender, same body within 60 s, or server timestamp) are inserted into data.json / chat.md, existing lines (phone-backup included) are never changed, missing old attachments are ignored; new media filed via central_media; hard-link backup, append-only + link check and restore per chat; viewer rebuild; optional rclone copy + check --one-way (REMOTE, copy only)
+- sync.py contract: lock OUT/_state/sync.lock (PID, busy -> exit 75), atomic OUT/_state/sync_status.json after every step, OUT/_state/sync.log (counts and NNN only), disk guard (MIN_FREE_GIB / ABORT_FREE_GIB)
+- pipeline/sync_export.py: runs sigexport in-process with the DB key from the login Keychain item `sigexport-browser` (never on a command line, in a file or printed); `sync.py --setup-key` stores it once (interactive "Always Allow" for Signal Safe Storage)
+- prepare_source.py: `quit_signal=False` live copy of sql/ while Signal runs (db then WAL, no -shm, retried until db.sqlite and the WAL salts are unchanged; nothing written to the Signal folder); pipeline/tests/test_sync.py (append-only, phone lines kept, missing attachments, next NNN, dry run, lock/exit 75, status file, match rules)
+
 ## v0.1.25 (build 13) — 2026-11-06
 - README: Requirements rewritten for the cross-platform Python pipeline (macOS/Linux/Windows with CI on all three, real runs on macOS 26 only; Python 3.10+, sigexport 3.9.x via pipx, Signal Desktop linked, optional rclone, Keychain / gnome-libsecret or kwallet / DPAPI key-store notes, MIN_FREE_GIB 8 / ABORT_FREE_GIB 3 disk guidance, any browser); Quick start and per-OS sections use export_all.py / prepare_source.py (work dir ~/SignalExport/_work/src), stale defaults (6/4), duplicate Windows section and the "macOS only" limitation fixed
 

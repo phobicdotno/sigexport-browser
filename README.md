@@ -248,6 +248,18 @@ MTP (for example OpenMTP) works too, but it has been seen to silently drop small
 
 Sources: [signalbackup-tools](https://github.com/bepaald/signalbackup-tools), [signalbackup-tools #382](https://github.com/bepaald/signalbackup-tools/issues/382), [libsignal message-backup](https://github.com/signalapp/libsignal/tree/main/rust/message-backup), [Signal-Android](https://github.com/signalapp/Signal-Android), [Escartem/SignalTool](https://github.com/Escartem/SignalTool), [Help Net Security, 2026-09-30](https://www.helpnetsecurity.com/2026/09/30/signal-encrypted-backups-ios-8-30/), [Signal blog: Introducing secure backups](https://signal.org/blog/introducing-secure-backups/).
 
+## Sync (merge-only re-sync)
+
+`python3 pipeline/sync.py --out ~/SignalExport [--upload] [--dry-run] [--quit-signal]` adds only what is new since the last export: new messages (inserted in date order into data.json and chat.md), new media (central `Media/`), new chats (next free NNN). Existing lines, including `"source": "phone-backup"` ones, are never changed or removed, and attachments that Signal no longer has are ignored. Status: `_state/sync_status.json`, log: `_state/sync.log`, lock: `_state/sync.lock` (exit 75 when busy). `--upload` runs `rclone copy` to `$REMOTE` plus `rclone check --one-way` (never sync/delete).
+
+DB snapshot: by default a live copy while Signal runs (db.sqlite, then the WAL, no -shm; retried until no checkpoint happened during the copy). `--quit-signal` quits Signal, copies and reopens it (used by the nightly job).
+
+One-time key setup for unattended runs (macOS), in Terminal while logged in:
+
+    python3.13 pipeline/sync.py --setup-key
+
+Click **Always Allow** on the "Signal Safe Storage" prompt. This decrypts the SQLCipher key once and stores it in your login Keychain as generic password `sigexport-browser` (account = your user, readable by `/usr/bin/security` without a prompt). The key is passed to sigexport in-process; it is never written to a file or a command line. Unattended runs need the login keychain unlocked (you are logged in; the screen may be locked). To remove: `security delete-generic-password -s sigexport-browser`.
+
 ## Media layout
 
 Default (`--media-layout central` / `MEDIA_LAYOUT=central`): every unique file lives once in `OUT_DIR/Media/{Pictures,Videos,Audio,Documents}/` under its sigexport name (stickers go to Pictures). When two different files would get the same name, `_<md5[:8]>` goes before the extension. Every chat links to `../../Media/<Type>/<file>` (URL-encoded in `chat.md`/`index.html`, plain in `data.json`), and per-chat `media/` folders are removed. `STATE_DIR/media_index.tsv` maps md5 to `Media/<Type>/<file>`.

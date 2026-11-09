@@ -73,10 +73,55 @@ def remove_link(p: Path) -> None:
         raise SystemExit(f"Refusing to replace a real directory: {p}")
 
 
-def prepare(signal_dir: Path, work_dir: Path) -> None:
+def _sig(p: Path):
+    """(size, mtime_ns, WAL salts) of a file; None if absent."""
+    try:
+        st = p.stat()
+    except FileNotFoundError:
+        return None
+    head = b""
+    if p.name.endswith("-wal"):
+        with open(p, "rb") as f:
+            head = f.read(32)[16:24]  # salt-1/salt-2 change on every WAL reset (checkpoint restart)
+    return st.st_size, st.st_mtime_ns, head
+
+
+def copy_sql_live(src: Path, dst: Path, attempts: int = 6, pause: float = 2.0) -> int:
+    """Consistent copy of sql/ while Signal may be running, without writing to Signal's folder.
+
+    SQLite in WAL mode only changes db.sqlite during a checkpoint; between checkpoints it only
+    appends frames to db.sqlite-wal. So: stat db + wal, copy db then wal (never -shm; SQLite
+    rebuilds the wal-index from the WAL), stat again. If db.sqlite and the WAL salts are
+    unchanged, the db copy is the pre-checkpoint image and the WAL copy is a prefix of the
+    log; SQLite's WAL recovery ignores a torn trailing transaction (frame checksums), so the
+    copy opens at the last fully committed transaction. Otherwise retry. Returns attempts used."""
+    names = [n.name for n in src.iterdir() if n.is_file() and not n.name.endswith("-shm")]
+    for i in range(1, attempts + 1):
+        db_before, wal_before = _sig(src / "db.sqlite"), _sig(src / "db.sqlite-wal")
+        tmp = dst.with_name(dst.name + ".new")
+        shutil.rmtree(tmp, ignore_errors=True)
+        tmp.mkdir(parents=True)
+        for n in sorted(names, key=lambda x: x.endswith("-wal")):  # db first, WAL last
+            if (src / n).exists():
+                shutil.copy2(src / n, tmp / n)
+        db_after, wal_after = _sig(src / "db.sqlite"), _sig(src / "db.sqlite-wal")
+        wal_ok = (wal_before is None and wal_after is None) or (
+            wal_before is not None and wal_after is not None and wal_before[2] == wal_after[2]
+            and wal_after[0] >= wal_before[0])
+        if db_before == db_after and wal_ok:
+            shutil.rmtree(dst, ignore_errors=True)
+            os.replace(tmp, dst)
+            return i
+        shutil.rmtree(tmp, ignore_errors=True)
+        time.sleep(pause)
+    raise SystemExit("Signal kept checkpointing during the copy; retry later or use --quit-signal")
+
+
+def prepare(signal_dir: Path, work_dir: Path, quit_signal: bool = True) -> None:
+    """quit_signal=False: never quit Signal, use the live WAL-aware copy (copy_sql_live)."""
     if not (signal_dir / "config.json").is_file() or not (signal_dir / "sql").is_dir():
         raise SystemExit(f"Not a Signal Desktop folder: {signal_dir}")
-    if signal_running():
+    if quit_signal and signal_running():
         if sys.platform == "darwin":
             print("Signal Desktop is running. Quitting it so the database copy is consistent...")
             subprocess.run(["osascript", "-e", 'quit app "Signal"'], capture_output=True)
@@ -88,12 +133,16 @@ def prepare(signal_dir: Path, work_dir: Path) -> None:
             print("WARNING: Signal is still running; quit it, or the copied database may be inconsistent.",
                   file=sys.stderr)
     work_dir.mkdir(parents=True, exist_ok=True)
-    shutil.rmtree(work_dir / "sql", ignore_errors=True)
     for f in COPY_FILES:
         (work_dir / f).unlink(missing_ok=True)
         if (signal_dir / f).is_file():
             shutil.copy2(signal_dir / f, work_dir / f)
-    shutil.copytree(signal_dir / "sql", work_dir / "sql")
+    if quit_signal and not signal_running():
+        shutil.rmtree(work_dir / "sql", ignore_errors=True)
+        shutil.copytree(signal_dir / "sql", work_dir / "sql")
+    else:
+        n = copy_sql_live(signal_dir / "sql", work_dir / "sql")
+        print(f"sql: live copy (attempts={n})")
     for d in LINK_DIRS:
         link = work_dir / d
         remove_link(link)
