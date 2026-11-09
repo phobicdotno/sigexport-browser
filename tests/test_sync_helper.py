@@ -130,6 +130,59 @@ class SyncHelperTest(unittest.TestCase):
         with self.assertRaises(urllib.error.HTTPError):  # single use
             urllib.request.urlopen(url, timeout=10)
 
+    def _get(self, path):
+        try:
+            with urllib.request.urlopen("http://127.0.0.1:%d%s" % (self.port, path), timeout=10) as r:
+                return r.status, r.headers, r.read()
+        except urllib.error.HTTPError as e:
+            return e.code, e.headers, e.read()
+
+    def test_file_ticket_download(self):
+        from urllib.parse import quote
+        self._media_fixture()
+        ref = quote("../Media/Pictures/a1.jpg", safe="")
+        self.assertEqual(self.call("POST", "/file-ticket?chat=7&ref=" + ref, token=None)[0], 401)
+        self.assertEqual(self.call("POST", "/file-ticket?chat=7&ref=" + ref, origin="https://evil.example")[0], 403)
+        code, h, body = self.call("POST", "/file-ticket?chat=7&ref=" + ref, origin="null")
+        self.assertEqual((code, body["name"]), (200, "Sun æ.jpg"))
+        self.assertEqual(h.get("Access-Control-Allow-Origin"), "null")
+        code, h, data = self._get("/file?ticket=" + body["ticket"])
+        self.assertEqual((code, data), (200, b"JPEGDATA"))
+        self.assertEqual(h["Content-Disposition"],
+                         "attachment; filename=\"Sun _.jpg\"; filename*=UTF-8''Sun%20%C3%A6.jpg")
+        self.assertEqual(h["Content-Type"], "image/jpeg")
+        self.assertEqual(h["Content-Length"], "8")
+        self.assertEqual(self._get("/file?ticket=" + body["ticket"])[0], 401)  # single use
+        self.assertEqual(self._get("/file?ticket=wrong")[0], 401)
+
+    def test_file_ticket_refuses_traversal_and_unlisted(self):
+        from urllib.parse import quote
+        self._media_fixture()
+        (self.out / "Media" / "Pictures" / "other.jpg").write_bytes(b"X")
+        for ref in ("../secret.txt", "../Media/../../etc/hosts", "../Media/Pictures/other.jpg",
+                    "../Media/Pictures/gone.jpg", "/etc/hosts", "", "file:///etc/hosts"):
+            self.assertEqual(self.call("POST", "/file-ticket?chat=7&ref=" + quote(ref, safe=""))[0], 404, ref)
+        self.assertEqual(self.call("POST", "/file-ticket?chat=../7&ref=x")[0], 404)
+        self.assertEqual(self.call("POST", "/file-ticket?chat=8&ref=" + quote("../Media/Pictures/a1.jpg"))[0], 404)
+        # a zip ticket is not a file ticket and vice versa
+        zt = self.call("POST", "/zip-ticket?chat=7")[2]["ticket"]
+        self.assertEqual(self._get("/file?ticket=" + zt)[0], 401)
+        ft = self.call("POST", "/file-ticket?chat=7&ref=" + quote("../Media/Pictures/a1.jpg"))[2]["ticket"]
+        self.assertEqual(self._get("/media.zip?chat=7&ticket=" + ft)[0], 401)
+
+    def test_file_ticket_expires(self):
+        from urllib.parse import quote
+        self._media_fixture()
+        tickets = sync_helper.Tickets(ttl=0.3)
+        self.httpd.RequestHandlerClass = sync_helper.make_handler(
+            str(self.out), self.port, sync_helper.Runner(str(self.out), sys.executable, str(STUB), False), tickets)
+        tk = self.call("POST", "/file-ticket?chat=7&ref=" + quote("../Media/Pictures/a2.mp4"))[2]["ticket"]
+        time.sleep(0.5)
+        self.assertEqual(self._get("/file?ticket=" + tk)[0], 401)
+        tk = self.call("POST", "/file-ticket?chat=7&ref=" + quote("../Media/Pictures/a2.mp4"))[2]["ticket"]
+        code, h, data = self._get("/file?ticket=" + tk)
+        self.assertEqual((code, data, h["Content-Type"]), (200, b"MP4DATA", "video/mp4"))
+
     def test_log_tail_current_run_and_failed_count(self):
         st = self.out / "_state"
         st.mkdir()

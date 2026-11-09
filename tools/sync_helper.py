@@ -11,6 +11,10 @@ Endpoints (127.0.0.1 only):
   GET  /media.zip?chat=N&ticket=T   streams a zip of chat N's photos/videos (the ticket replaces the
                       token header so the browser can download it natively). Only files referenced in
                       OUT/viewer/data/N.js, resolved inside OUT/Media or that chat's own folder.
+  POST /file-ticket?chat=N&ref=R  -> {"ticket": "...", "name": "..."}: same 60 s single-use ticket for one
+                      attachment; R must be an attachment path listed in OUT/viewer/data/N.js
+  GET  /file?ticket=T streams that one file as an attachment (Content-Disposition filename*=UTF-8''name)
+                      so the file:// viewer can save it straight to disk
   OPTIONS *     CORS preflight
 
 Security:
@@ -30,6 +34,8 @@ file is older than EPOCH).
 import argparse
 import hmac
 import json
+import mimetypes
+import shutil
 import os
 import re
 import secrets
@@ -90,8 +96,11 @@ def read_log(out, lines=200):
     return run[-n:], failed
 
 
-def chat_media(out, chat_id):
-    """[(abs_path, arcname)] of chat chat_id's ok photos/videos, only inside OUT/Media or the chat's folder."""
+SAFE_NAME_RE = re.compile(r'[\\/:*?"<>|\x00-\x1f]+')
+
+
+def load_chat(out, chat_id):
+    """(chat dict, viewer dir, allowed roots) or None. Roots: OUT/Media and the chat's own folder."""
     if not re.fullmatch(r"\d{1,6}", str(chat_id)):
         return None
     root = Path(out).resolve()
@@ -107,17 +116,53 @@ def chat_media(out, chat_id):
         cd = (root / d.split("/")[0]).resolve()
         if cd != root and cd.is_relative_to(root):
             roots.append(cd)
+    return chat, viewer, roots
+
+
+def resolve_ref(viewer, roots, p):
+    """Absolute file for attachment path p, or None if outside the roots / missing / a URL."""
+    if not p or ":" in p.split("/")[0]:
+        return None
+    f = (viewer / unquote(p.split("#")[0].split("?")[0])).resolve()
+    if not any(f.is_relative_to(r) for r in roots) or not f.is_file():
+        return None
+    return f
+
+
+def safe_name(a, f):
+    return SAFE_NAME_RE.sub("_", a.get("name") or f.name).lstrip(".") or f.name
+
+
+def chat_file(out, chat_id, ref):
+    """(abs_path, download name) for attachment ref listed in chat chat_id, else None."""
+    got = load_chat(out, chat_id)
+    if got is None or not ref:
+        return None
+    chat, viewer, roots = got
+    for m in chat.get("messages", []):
+        for a in m.get("a", []):
+            if a.get("path") == ref and a.get("ok"):
+                f = resolve_ref(viewer, roots, ref)
+                return (f, safe_name(a, f)) if f else None
+    return None
+
+
+def chat_media(out, chat_id):
+    """[(abs_path, arcname)] of chat chat_id's ok photos/videos, only inside OUT/Media or the chat's folder."""
+    got = load_chat(out, chat_id)
+    if got is None:
+        return None
+    chat, viewer, roots = got
     files, seen, names = [], set(), set()
     for m in chat.get("messages", []):
         for a in m.get("a", []):
-            p = a.get("path") or ""
-            if a.get("type") not in ("image", "video") or not a.get("ok") or not p or ":" in p.split("/")[0]:
+            if a.get("type") not in ("image", "video") or not a.get("ok"):
                 continue
-            f = (viewer / unquote(p.split("#")[0].split("?")[0])).resolve()
-            if f in seen or not any(f.is_relative_to(r) for r in roots) or not f.is_file():
+            f = resolve_ref(viewer, roots, a.get("path") or "")
+            if f is None or f in seen:
                 continue
             seen.add(f)
-            nm = re.sub(r'[\\/:*?"<>|\x00-\x1f]+', "_", a.get("name") or f.name).lstrip(".") or f.name
+            nm = safe_name(a, f)
             base, ext = os.path.splitext(nm)
             k, cand = 1, nm
             while cand.lower() in names:
@@ -133,17 +178,25 @@ class Tickets:
         self.ttl, self.t, self.lock = ttl, {}, threading.Lock()
 
     def issue(self, chat_id):
+        return self.issue_payload(str(chat_id))
+
+    def issue_payload(self, payload):
         tk = secrets.token_urlsafe(24)
         with self.lock:
             now = time.time()
             self.t = {k: v for k, v in self.t.items() if v[1] > now}
-            self.t[tk] = (str(chat_id), now + self.ttl)
+            self.t[tk] = (payload, now + self.ttl)
         return tk
 
     def take(self, tk, chat_id):
+        v = self.pop(tk)
+        return v is not None and v == str(chat_id)
+
+    def pop(self, tk):
+        """Payload of a valid ticket (consumed), else None."""
         with self.lock:
             v = self.t.pop(tk or "", None)
-        return v is not None and v[0] == str(chat_id) and v[1] > time.time()
+        return v[0] if v is not None and v[1] > time.time() else None
 
 
 def lock_held(out):
@@ -207,8 +260,13 @@ class Runner:
             return 202, {"started": True}
 
 
-def make_handler(out, port, runner):
-    tickets = Tickets()
+def disposition(fn):
+    ascii_fn = re.sub(r"[^A-Za-z0-9._ -]", "_", fn)
+    return "attachment; filename=\"%s\"; filename*=UTF-8''%s" % (ascii_fn, quote(fn, safe=""))
+
+
+def make_handler(out, port, runner, tickets=None):
+    tickets = tickets or Tickets()
     own = {"http://127.0.0.1:%d" % port, "http://localhost:%d" % port}
     hosts = {"127.0.0.1:%d" % port, "localhost:%d" % port}
 
@@ -277,10 +335,9 @@ def make_handler(out, port, runner):
                 return
             files, name = got
             fn = (re.sub(r'[\\/:*?"<>|\x00-\x1f]+', "_", name).strip() or "chat") + " - media.zip"
-            ascii_fn = re.sub(r"[^A-Za-z0-9._ -]", "_", fn)
             self.send_response(200)
             self.send_header("Content-Type", "application/zip")
-            self.send_header("Content-Disposition", "attachment; filename=\"%s\"; filename*=UTF-8''%s" % (ascii_fn, quote(fn)))
+            self.send_header("Content-Disposition", disposition(fn))
             self.send_header("Cache-Control", "no-store")
             self.send_header("Connection", "close")
             self.end_headers()
@@ -292,12 +349,46 @@ def make_handler(out, port, runner):
             except (OSError, ValueError):
                 pass  # client went away
 
+        def _file(self, q):
+            v = tickets.pop((q.get("ticket") or [""])[0])
+            if not isinstance(v, tuple):
+                self._send(401, {"error": "bad or expired ticket"})
+                return
+            got = chat_file(out, v[0], v[1])
+            if got is None:
+                self._send(404, {"error": "not found"})
+                return
+            f, fn = got
+            try:
+                fh = open(f, "rb")
+                size = os.fstat(fh.fileno()).st_size
+            except OSError:
+                self._send(404, {"error": "not found"})
+                return
+            with fh:
+                self.send_response(200)
+                self.send_header("Content-Type", mimetypes.guess_type(f.name)[0] or mimetypes.guess_type(fn)[0]
+                                 or "application/octet-stream")
+                self.send_header("Content-Length", str(size))
+                self.send_header("Content-Disposition", disposition(fn))
+                self.send_header("X-Content-Type-Options", "nosniff")
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                try:
+                    shutil.copyfileobj(fh, self.wfile, 1 << 20)
+                except OSError:
+                    pass  # client went away
+
         def do_GET(self):
             u = urlsplit(self.path)
             q = parse_qs(u.query)
             if u.path == "/media.zip":
                 if self._guard(token=False):
                     self._zip(q)
+                return
+            if u.path == "/file":
+                if self._guard(token=False):
+                    self._file(q)
                 return
             if not self._guard():
                 return
@@ -332,6 +423,14 @@ def make_handler(out, port, runner):
                     self._send(404, {"error": "no media"})
                 else:
                     self._send(200, {"ticket": tickets.issue(cid), "files": len(got[0])})
+            elif u.path == "/file-ticket":
+                q = parse_qs(u.query)
+                cid, ref = (q.get("chat") or [""])[0], (q.get("ref") or [""])[0]
+                got = chat_file(out, cid, ref)
+                if got is None:
+                    self._send(404, {"error": "not found"})
+                else:
+                    self._send(200, {"ticket": tickets.issue_payload((str(cid), ref)), "name": got[1]})
             else:
                 self._send(404, {"error": "not found"})
 

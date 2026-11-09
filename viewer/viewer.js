@@ -341,10 +341,24 @@ var IS_FILE=location.protocol==='file:',UA=navigator.userAgent,
 function toast(msg,ms){var t=$('toast');clearTimeout(toastT);t.textContent=msg;t.hidden=false;if(ms!==0)toastT=setTimeout(function(){t.hidden=true},ms||6000)}
 function dlName(a){var n=a.name||'';if(!n){n=(a.path||'').split('#')[0].split('?')[0].split('/').pop();try{n=decodeURIComponent(n)}catch(e){}}
   return n.replace(/[\\\/:*?"<>|\x00-\x1f]+/g,'_').replace(/^\.+/,'')||'file'}
-function download(a,quiet){if(!a||!a.ok||!a.path)return;
-  var l=document.createElement('a');l.href=a.path;l.download=dlName(a);l.target='_blank';l.rel='noopener';l.hidden=true;
-  document.body.appendChild(l);l.click();setTimeout(function(){l.remove()},0);
+function clickLink(href,dl,blank){var l=document.createElement('a');l.href=href;if(dl)l.download=dl;
+  if(blank){l.target='_blank';l.rel='noopener'}l.hidden=true;document.body.appendChild(l);l.click();setTimeout(function(){l.remove()},0)}
+function plainDownload(a,quiet){clickLink(a.path,dlName(a),true);
   if(IS_FILE&&!hinted&&!quiet){hinted=true;toast(T('dlHint'),9000)}}
+// file:// + helper (tools/sync_helper.py): POST /file-ticket (token) for this chat's ref, then navigate a link
+// to /file?ticket= — the helper answers Content-Disposition: attachment, so Chrome saves it to disk and the
+// viewer stays put. Helper down/slow (1.5 s, inside the click's user activation) -> new tab + ⌘S hint.
+function download(a,quiet){if(!a||!a.ok||!a.path)return;
+  var SC=window.SYNC_CONFIG;
+  if(!IS_FILE||!(SC&&SC.token&&window.fetch&&chat))return plainDownload(a,quiet);
+  var base='http://127.0.0.1:'+(+SC.port||8765),ac=window.AbortController?new AbortController():null,
+   to=setTimeout(function(){if(ac)ac.abort()},1500);
+  fetch(base+'/file-ticket?chat='+encodeURIComponent(chat.id)+'&ref='+encodeURIComponent(a.path),
+        {method:'POST',headers:{'X-Sync-Token':SC.token},cache:'no-store',signal:ac?ac.signal:undefined})
+   .then(function(r){if(r.status!==200)throw new Error(r.status);return r.json()})
+   .then(function(j){clearTimeout(to);if(!j.ticket)throw new Error('no ticket');
+     clickLink(base+'/file?ticket='+encodeURIComponent(j.ticket))})
+   .catch(function(){clearTimeout(to);plainDownload(a,quiet)})}
 window.__download=download;window.__dlName=dlName;
 function downloadAll(){
   var items=media.filter(function(x){return x.a.ok&&x.a.path}).map(function(x){return x.a});if(!items.length)return;
@@ -359,8 +373,7 @@ function downloadAll(){
   fetch(base+'/zip-ticket?chat='+encodeURIComponent(id),{method:'POST',headers:{'X-Sync-Token':SC.token},cache:'no-store'})
    .then(function(r){if(r.status!==200)throw new Error(r.status);return r.json()})
    .then(function(j){if(!j.ticket)throw new Error('no ticket');toast(T('dlZip',{n:j.files||n}),5000);
-     var l=document.createElement('a');l.href=base+'/media.zip?chat='+encodeURIComponent(id)+'&ticket='+encodeURIComponent(j.ticket);
-     l.hidden=true;document.body.appendChild(l);l.click();setTimeout(function(){l.remove()},0)})
+     clickLink(base+'/media.zip?chat='+encodeURIComponent(id)+'&ticket='+encodeURIComponent(j.ticket))})
    .catch(function(){seq()});
 }
 $('dlall').onclick=downloadAll;

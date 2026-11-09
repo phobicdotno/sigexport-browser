@@ -1,5 +1,8 @@
 # Changelog
 
+## v0.1.45 (build 23) — 2026-11-09
+- Viewer single-file Download saves straight to disk on file://: helper POST /file-ticket?chat=N&ref=R (token, ref must be an ok attachment listed in viewer/data/N.js, resolved inside OUT/Media or the chat's folder) returns a 60 s single-use ticket, GET /file?ticket=T streams the file with Content-Disposition attachment; filename*=UTF-8'' original name, Content-Type, Content-Length; zip and file tickets are not interchangeable; viewer falls back to new tab + ⌘S hint when the helper is down or slow (1.5 s), plain <a download> over http(s); tests for ticket, traversal, unlisted ref, header and expiry; headless Chrome check on synthetic fixture: file downloads, no new tab
+
 ## v0.1.44 (build 22) — 2026-11-09
 - Viewer sync bar forgiving when the helper is briefly unreachable (restart/KeepAlive relaunch): retries /status with backoff (1 s doubling to 8 s) showing "Connecting to the sync helper…" / "Kobler til synk-hjelperen…", clears by itself when it answers (a click made while it was down is replayed), and only after 60 s unreachable shows the plain hint "Synk-hjelperen svarer ikke. Åpne «Signal Sync»-appen eller kjør install_sync.sh på nytt."
 
