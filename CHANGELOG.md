@@ -1,5 +1,8 @@
 # Changelog
 
+## v0.1.48 (build 26) — 2026-11-09
+- Fast sync: incremental export (per-conversation DB fingerprint count:max(received_at):max(rowid) read from the same in-process cursor, stored in `_state/sync_watermarks.tsv`; only changed, new and deferred conversations go through sigexport via the id-based fetch_data filter, failed chats lose their watermark so they are retried; full export with `--full`, without watermarks, or weekly — edits/reactions are only picked up there and merge-only never rewrites existing lines anyway); incremental upload (stat diff of the archive before/after the run, viewer outputs by md5, minus tools/upload_excludes.txt; `rclone copy/check --one-way --files-from --no-traverse`; a failed upload's list is carried to the next run); whole-archive `rclone check` only with `--full-check` (03:00 job, installer default); `step=X secs=Y` per step in sync.log; viewer rebuild stays full (~40 s, global chat numbering); prune fetches remote md5s only for the candidates' archive files and compares paths NFC-normalised (macOS NFD vs Jottacloud NFC, æøå names were never pruned); tests
+
 ## v0.1.47 (build 25) — 2026-11-09
 - Sync: a new message whose attachment sigexport lists but Signal Desktop has not downloaded yet (file absent from the export) no longer rolls back the whole chat with "link check: 1 new broken refs" (root cause of NNN 186/070 failing); messages younger than 30 days are deferred to a later sync (logged as deferred=N, `deferred_messages` in sync_status.json), older ones are added with the attachment flagged `missing_kind: absent_at_sync`; failed-chat log lines now name the check and counts (MergeCheck: …) and, for OS errors, only type + errno, never paths or chat names; tests
 

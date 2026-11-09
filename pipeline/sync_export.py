@@ -1,8 +1,14 @@
 #!/usr/bin/env python3
 """Run sigexport 3.9.x in-process (run with sigexport's own venv python) for sync.py.
 
-  sync_export.py export SRC DEST   full export of every chat into DEST, plus DEST/_cids.tsv
-                                   (conversation id <TAB> sigexport folder name)
+  sync_export.py export SRC DEST [OUT] [--watermarks WM] [--full]
+                                   export into DEST, plus DEST/_cids.tsv (conversation id <TAB>
+                                   sigexport folder name) and DEST/_fingerprints.tsv (cid, count,
+                                   max received_at, max rowid per conversation, read from the same
+                                   DB cursor). With --watermarks (and not --full) only the
+                                   conversations select_cids() picks are exported (id-based, the
+                                   fetch_data filter of _work/export_by_id.py); DEST/_selected.tsv
+                                   lists them (or "*" for all)
   sync_export.py conv-map SRC OUT  build/complete OUT/_state/conv_map.tsv only (no export)
   sync_export.py setup-key SRC     one-time, interactive: decrypt the SQLCipher key via
                                    sigexport (Keychain "Signal Safe Storage" prompt) and store
@@ -134,7 +140,40 @@ def conv_map_only(src, out):
     update_conv_map(out, {c.name: k for k, c in contacts.items() if c.name}, convos)
 
 
-def export(src, dest, out=None):
+FP_SQL = ("SELECT conversationId, COUNT(*), COALESCE(MAX(received_at), 0), MAX(rowid) "
+          "FROM messages WHERE conversationId IS NOT NULL GROUP BY conversationId")
+
+
+def fingerprints(cur) -> dict:
+    """{cid: 'count:max_received_at:max_rowid'}: cheap per-conversation change fingerprint.
+    New messages raise count/rowid; deletions lower count. In-place edits and reactions do
+    not change it (merge-only would not apply them anyway; the weekly full export runs)."""
+    cur.execute(FP_SQL)
+    return {r[0]: f"{r[1]}:{r[2]}:{r[3]}" for r in cur.fetchall()}
+
+
+def read_watermarks(p) -> dict:
+    """_state/sync_watermarks.tsv: cid <TAB> fingerprint <TAB> deferred (lines starting # = meta)."""
+    wm = {}
+    p = Path(p)
+    if p.is_file():
+        for line in p.read_text(encoding="utf-8").splitlines():
+            q = line.split("\t")
+            if len(q) == 3 and not q[0].startswith("#"):
+                wm[q[0]] = (q[1], int(q[2] or 0))
+    return wm
+
+
+def select_cids(fp: dict, wm: dict) -> set:
+    """Conversations to export: new (no watermark), changed fingerprint, or deferred > 0."""
+    return {c for c, f in fp.items() if c not in wm or wm[c][0] != f or wm[c][1] > 0}
+
+
+class NothingToExport(Exception):
+    pass
+
+
+def export(src, dest, out=None, wm_path=None, full=True):
     import sigexport.data as data
     import sigexport.main as smain
     import sigexport.utils as utils
@@ -142,9 +181,21 @@ def export(src, dest, out=None):
     _fix, _fetch = utils.fix_names, data.fetch_data
 
     def fetch_record(*a, **k):
+        cur = a[1] if len(a) > 1 else k.get("c")
+        fp = fingerprints(cur)
+        captured["fp"] = fp
         res = _fetch(*a, **k)
         captured["convos"] = res[0]
-        return res
+        if full or not wm_path:
+            captured["selected"] = None
+            return res
+        sel = select_cids(fp, read_watermarks(wm_path))
+        captured["selected"] = sel
+        keep = {c: v for c, v in res[0].items() if c in sel}
+        print(f"incremental: export {len(keep)}/{len(res[0])} convos", flush=True)
+        if not keep:
+            raise NothingToExport()
+        return (keep,) + tuple(res[1:])
 
     data.fetch_data = fetch_record
 
@@ -165,8 +216,16 @@ def export(src, dest, out=None):
         smain.cli()
     except SystemExit as e:
         rc = e.code or 0
+    except NothingToExport:
+        rc = 0
     finally:
         Path(dest).mkdir(parents=True, exist_ok=True)
+        with open(Path(dest) / "_fingerprints.tsv", "w", encoding="utf-8") as f:
+            for cid, v in (captured.get("fp") or {}).items():
+                f.write(f"{cid}\t{v}\n")
+        with open(Path(dest) / "_selected.tsv", "w", encoding="utf-8") as f:
+            sel = captured.get("selected")
+            f.write("*\n" if sel is None else "".join(f"{c}\n" for c in sorted(sel)))
         with open(Path(dest) / "_cids.tsv", "w", encoding="utf-8") as f:
             for cid, name in mapping.items():
                 if name:
@@ -181,7 +240,15 @@ if __name__ == "__main__":
         setup_key(sys.argv[2])
         sys.exit(0)
     if len(sys.argv) >= 4 and sys.argv[1] == "export":
-        sys.exit(export(sys.argv[2], sys.argv[3], sys.argv[4] if len(sys.argv) > 4 else None))
+        args = sys.argv[2:]
+        full = "--full" in args
+        wm = None
+        if "--watermarks" in args:
+            i = args.index("--watermarks")
+            wm = args[i + 1]
+            del args[i:i + 2]
+        args = [x for x in args if x != "--full"]
+        sys.exit(export(args[0], args[1], args[2] if len(args) > 2 else None, wm, full or not wm))
     if len(sys.argv) >= 4 and sys.argv[1] == "conv-map":
         conv_map_only(sys.argv[2], sys.argv[3])
         sys.exit(0)

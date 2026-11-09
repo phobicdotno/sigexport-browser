@@ -191,7 +191,8 @@ class SyncTest(unittest.TestCase):
         with self.assertRaises(SystemExit):
             S.load_upload_excludes(bad)
         # the real --upload path passes the exclude to both rclone copy and rclone check
-        write_chat(self.exp / "A", [msg("2026-01-01T10:00:00.000000", "A", "one")])
+        write_chat(self.exp / "A", [msg("2026-01-01T10:00:00.000000", "A", "one"),
+                                    msg("2026-01-02T10:00:00.000000", "A", "new")])
         calls, real = [], S.subprocess.run
 
         def fake(cmd, *a, **kw):
@@ -213,6 +214,110 @@ class SyncTest(unittest.TestCase):
         self.assertEqual([c[1] for c in calls], ["copy", "check"])
         for c in calls:
             self.assertIn("viewer/sync_config.js", [c[i + 1] for i, x in enumerate(c) if x == "--exclude"])
+
+    # ------------------------------------------------------------ incremental export / upload
+    def test_watermark_selection(self):
+        import sync_export as SE
+        fp = {"same": "5:100:9", "changed": "6:200:12", "deferred": "3:50:4", "new": "1:10:1"}
+        wm = {"same": ("5:100:9", 0), "changed": ("5:100:9", 0), "deferred": ("3:50:4", 2), "gone": ("1:1:1", 0)}
+        self.assertEqual(SE.select_cids(fp, wm), {"changed", "deferred", "new"})
+        p = self.root / "wm.tsv"
+        p.write_text("#last_full\t123\nsame\t5:100:9\t0\ndeferred\t3:50:4\t2\n", encoding="utf-8")
+        self.assertEqual(SE.read_watermarks(p), {"same": ("5:100:9", 0), "deferred": ("3:50:4", 2)})
+
+    def test_fingerprints_from_db(self):
+        import sqlite3
+        import sync_export as SE
+        db = sqlite3.connect(":memory:")
+        db.execute("CREATE TABLE messages (conversationId TEXT, received_at INTEGER)")
+        db.executemany("INSERT INTO messages VALUES (?,?)", [("a", 1), ("a", 5), ("b", 3), (None, 9)])
+        fp = SE.fingerprints(db.cursor())
+        self.assertEqual(set(fp), {"a", "b"})
+        self.assertTrue(fp["a"].startswith("2:5:"))
+        before = fp["a"]
+        db.execute("DELETE FROM messages WHERE received_at=1")  # a deletion changes the fingerprint
+        self.assertNotEqual(SE.fingerprints(db.cursor())["a"], before)
+
+    def test_full_export_decision_and_watermark_write(self):
+        st = self.out / "_state"
+        self.assertEqual(S.want_full_export(st, False), "no watermarks")
+        tmp = self.root / "tmp"
+        tmp.mkdir()
+        (tmp / "_fingerprints.tsv").write_text("ok\t1:1:1\nbad\t2:2:2\ndef\t3:3:3\n", encoding="utf-8")
+        self.assertEqual(S.write_watermarks(st, tmp, {"bad"}, {"def": 1}, True), 2)
+        import sync_export as SE
+        wm = SE.read_watermarks(st / S.WATERMARKS)
+        self.assertEqual(wm, {"ok": ("1:1:1", 0), "def": ("3:3:3", 1)})  # failed one re-exported next time
+        self.assertIsNone(S.want_full_export(st, False))
+        self.assertEqual(S.want_full_export(st, True), "--full")
+        self.assertEqual(S.want_full_export(st, False, now=S.time.time() + 8 * 86400), "weekly")
+        S.write_watermarks(st, tmp, set(), {}, False)  # incremental keeps last_full
+        self.assertIsNone(S.want_full_export(st, False))
+
+    def test_glob_regex_like_rclone(self):
+        ex = S.excluder(S.load_upload_excludes())
+        for rel in ("viewer/sync_config.js", "_work/sync_tmp/A/data.json", "_state/sync.log", "x/y.pid",
+                    "viewer/.build_tmp/data/1.js", "viewer/data.new/1.js"):
+            self.assertTrue(ex(rel), rel)
+        for rel in ("viewer/data/1.js", "001_A/A/data.json", "_state/conv_map.tsv", "Media/Pictures/x.jpg",
+                    "_state/sync_watermarks.tsv"):
+            self.assertFalse(ex(rel), rel)
+
+    def test_files_from_list_has_changed_files_and_no_excluded(self):
+        v = self.out / "viewer"
+        (v / "data").mkdir(parents=True)
+        (v / "data" / "1.js").write_text("same", encoding="utf-8")
+        (v / "sync_config.js").write_text("token", encoding="utf-8")
+        (self.out / "_work").mkdir()
+        (self.out / "_work" / "junk.txt").write_text("x", encoding="utf-8")
+        ex = S.excluder(S.load_upload_excludes())
+        before = S.tree_state(self.out, ex)
+        self.assertNotIn("viewer/sync_config.js", before)
+        self.assertNotIn("_work/junk.txt", before)
+        # rewritten with the same content (build_viewer swaps whole dirs): not uploaded
+        os.utime(v / "data" / "1.js", ns=(1, 1))
+        (v / "data" / "2.js").write_text("new", encoding="utf-8")
+        (v / "sync_config.js").write_text("token2", encoding="utf-8")
+        (self.out / "001_A" / "A" / "data.json").write_text(self.before + "{}\n", encoding="utf-8")
+        files = S.changed_files(before, S.tree_state(self.out, ex))
+        self.assertEqual(files, ["001_A/A/data.json", "viewer/data/2.js"])
+
+    def test_upload_uses_files_from_with_changed_chat_only(self):
+        write_chat(self.exp / "A", [msg("2026-01-01T10:00:00.000000", "A", "one"),
+                                    msg("2026-01-03T10:00:00.000000", "A", "brand new")])
+        (self.out / "viewer").mkdir()
+        (self.out / "viewer" / "sync_config.js").write_text("token", encoding="utf-8")
+        calls, lists, real = [], [], S.subprocess.run
+
+        def fake(cmd, *a, **kw):
+            if cmd and cmd[0] == "rclone":
+                calls.append(cmd)
+                lst = cmd[cmd.index("--files-from") + 1]
+                lists.append(Path(lst).read_text(encoding="utf-8").splitlines())
+                return S.subprocess.CompletedProcess(cmd, 0)
+            if cmd and str(cmd[-1]).endswith("viewer") or "build_viewer.py" in " ".join(map(str, cmd)):
+                return S.subprocess.CompletedProcess(cmd, 0)
+            return real(cmd, *a, **kw)
+        os.environ["REMOTE"] = "dummy:remote"
+        S.subprocess.run = fake
+        try:
+            self.assertEqual(self.run_sync("--upload"), 0)
+        finally:
+            S.subprocess.run = real
+            os.environ.pop("REMOTE", None)
+        self.assertEqual([c[1] for c in calls], ["copy", "check"])
+        self.assertIn("--no-traverse", calls[0])
+        self.assertIn("--one-way", calls[1])
+        files = lists[0]
+        self.assertIn("001_A/A/data.json", files)
+        self.assertIn("001_A/A/chat.md", files)
+        self.assertNotIn("viewer/sync_config.js", files)
+        self.assertNotIn("Media/Pictures/x.jpg", files)  # unchanged
+        self.assertFalse(any(f.startswith("_work/") or f.endswith(".log") for f in files))
+        log = (self.out / "_state" / "sync.log").read_text(encoding="utf-8")
+        self.assertRegex(log, r"step=merge secs=\d+\.\d")
+        self.assertRegex(log, r"step=upload secs=\d+\.\d")
+
 
 if __name__ == "__main__":
     unittest.main()

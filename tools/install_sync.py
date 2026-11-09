@@ -234,7 +234,7 @@ def install(a):
     # 3. daily 03:00 LaunchAgent (missed runs fire once on wake, see man launchd.plist)
     sp = AGENTS / (LABEL_SYNC + ".plist")
     senv = dict(env, OUT=str(out), PY=a.python, SYNC_PY=str(REPO / "pipeline" / "sync.py"),
-                SYNC_ARGS="--upload --quit-signal" if a.remote else "--quit-signal", MIN_BATTERY=str(a.min_battery))
+                SYNC_ARGS="--upload --quit-signal --full-check" if a.remote else "--quit-signal", MIN_BATTERY=str(a.min_battery))
     sp.write_bytes(plistlib.dumps({
         "Label": LABEL_SYNC, "ProgramArguments": ["/bin/bash", str(REPO / "tools" / "sync_scheduled.sh")],
         "StartCalendarInterval": {"Hour": 3, "Minute": 0}, "ProcessType": "Background",

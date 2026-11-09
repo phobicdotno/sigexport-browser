@@ -16,7 +16,7 @@ Per file, all required (else the file is kept and the reason counted):
   1. decrypts in memory with its localKey (HMAC-SHA256 checked, AES-256-CBC, as sigexport
      files.decrypt_attachment), sha256 matches plaintextHash when one is stored
   2. plaintext md5 is in OUT/_state/media_index.tsv and that archive file exists with that md5
-  3. the same file exists on the remote with the same md5 (one `rclone md5sum REMOTE/Media`)
+  3. the same file exists on the remote with the same md5 (`rclone md5sum --files-from` of just those archive paths, NFC-normalised)
 
 Verified files are moved to OUT/_work/pruned/<date>/ (sync.py deletes that folder after the run
 summary is written). Prints one JSON summary line; never prints file names.
@@ -34,6 +34,7 @@ import shutil
 import subprocess
 import sys
 import time
+import unicodedata
 from datetime import datetime
 from pathlib import Path
 
@@ -125,59 +126,99 @@ def file_md5(p: Path) -> str:
     return h.hexdigest()
 
 
-def remote_media_md5s(remote: str) -> dict[str, str]:
-    """{'Media/<Type>/<file>': md5} from one `rclone md5sum REMOTE/Media` listing."""
-    r = subprocess.run(["rclone", "md5sum", remote.rstrip("/") + "/Media", "--checkers", "8"],
-                       capture_output=True, text=True)
-    if r.returncode != 0:
-        raise RuntimeError(f"rclone md5sum rc={r.returncode}")
+def nfc(s: str) -> str:
+    """macOS stores names as NFD, Jottacloud returns NFC: compare paths in NFC on both sides."""
+    return unicodedata.normalize("NFC", s)
+
+
+def parse_md5sum(text: str, prefix: str = "") -> dict[str, str]:
     res = {}
-    for line in r.stdout.splitlines():
+    for line in text.splitlines():
         m = re.match(r"^([0-9a-f]{32})  (.+)$", line)
         if m:
-            res["Media/" + m.group(2)] = m.group(1)
+            res[nfc(prefix + m.group(2))] = m.group(1)
     return res
 
 
-def verify(c: dict, att_dir: Path, out: Path, index: dict, remote: dict, md5_cache: dict):
+def remote_media_md5s(remote: str, arcs=None) -> dict[str, str]:
+    """{'Media/<Type>/<file>' (NFC): md5}. With arcs (archive-relative paths) only those files
+    are hashed (`rclone md5sum REMOTE --files-from`), else one listing of REMOTE/Media."""
+    if arcs is not None:
+        arcs = sorted(set(arcs))
+        if not arcs:
+            return {}
+        import tempfile
+        with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False, encoding="utf-8") as f:
+            f.write("".join(a + "\n" for a in arcs))
+            lst = f.name
+        try:
+            r = subprocess.run(["rclone", "md5sum", remote.rstrip("/"), "--files-from", lst, "--checkers", "8"],
+                               capture_output=True, text=True)
+        finally:
+            os.unlink(lst)
+        prefix = ""
+    else:
+        r = subprocess.run(["rclone", "md5sum", remote.rstrip("/") + "/Media", "--checkers", "8"],
+                           capture_output=True, text=True)
+        prefix = "Media/"
+    if r.returncode != 0 and arcs is None:
+        raise RuntimeError(f"rclone md5sum rc={r.returncode}")
+    # with --files-from a missing remote file makes rclone exit non-zero: those are simply absent
+    return parse_md5sum(r.stdout, prefix)
+
+
+def verify(c: dict, att_dir: Path, out: Path, index: dict, remote, md5_cache: dict):
     """-> (ok, reason, nbytes). Reads the Signal file once, never writes."""
+    ok, why, n, arc, md5 = verify_local(c, att_dir, out, index, md5_cache)
+    if not ok:
+        return ok, why, n
+    return check_remote(arc, md5, remote, n)
+
+
+def check_remote(arc: str, md5: str, remote: dict, n: int):
+    r = remote.get(nfc(arc))
+    if r != md5:
+        return False, "not_on_remote" if r is None else "remote_md5_mismatch", n
+    return True, "ok", n
+
+
+def verify_local(c: dict, att_dir: Path, out: Path, index: dict, md5_cache: dict):
+    """-> (ok, reason, nbytes, arc, md5): every check except the remote one."""
     rel = c["path"]
     if not SAFE_REL.match(rel) or ".." in rel:
-        return False, "odd_path", 0
+        return False, "odd_path", 0, None, None
     f = att_dir / rel
     if f.is_symlink() or not f.is_file():
-        return False, "missing_in_signal", 0
+        return False, "missing_in_signal", 0, None, None
     try:
         if f.resolve().parent.parent != att_dir.resolve():
-            return False, "odd_path", 0
+            return False, "odd_path", 0, None, None
         blob = f.read_bytes()
     except OSError:
-        return False, "unreadable", 0
+        return False, "unreadable", 0, None, None
     try:
         plain = decrypt(blob, c["localKey"], c["size"])
     except Exception:  # noqa: BLE001
-        return False, "decrypt_failed", len(blob)
+        return False, "decrypt_failed", len(blob), None, None
     ph = (c.get("plaintextHash") or "").lower()
     if re.fullmatch(r"[0-9a-f]{64}", ph) and hashlib.sha256(plain).hexdigest() != ph:
-        return False, "sha256_mismatch", len(blob)
+        return False, "sha256_mismatch", len(blob), None, None
     md5 = hashlib.md5(plain).hexdigest()
     del plain
     arc = index.get(md5)
     if not arc:
-        return False, "not_in_index", len(blob)
+        return False, "not_in_index", len(blob), None, None
     local = out.joinpath(*arc.split("/"))
     if not local.is_file():
-        return False, "archive_file_missing", len(blob)
+        return False, "archive_file_missing", len(blob), None, None
     if arc not in md5_cache:
         md5_cache[arc] = file_md5(local)
     if md5_cache[arc] != md5:
-        return False, "archive_md5_mismatch", len(blob)
-    if remote.get(arc) != md5:
-        return False, "not_on_remote" if arc not in remote else "remote_md5_mismatch", len(blob)
-    return True, "ok", len(blob)
+        return False, "archive_md5_mismatch", len(blob), None, None
+    return True, "ok", len(blob), arc, md5
 
 
-def prune(cur, signal_dir: Path, out: Path, days: int, remote: dict, dry: bool,
+def prune(cur, signal_dir: Path, out: Path, days: int, remote, dry: bool,
           now_ms: int | None = None, log=lambda s: None) -> dict:
     now_ms = int(time.time() * 1000) if now_ms is None else now_ms
     att_dir = signal_dir / "attachments.noindex"
@@ -187,8 +228,13 @@ def prune(cur, signal_dir: Path, out: Path, days: int, remote: dict, dry: bool,
     s = {"days": int(days), "dry_run": bool(dry), "candidates": len(cands), "verified": 0,
          "pruned_files": 0, "pruned_bytes": 0, "kept": {}}
     md5_cache: dict = {}
-    for c in cands:
-        ok, why, n = verify(c, att_dir, out, index, remote, md5_cache)
+    local = [(c, verify_local(c, att_dir, out, index, md5_cache)) for c in cands]
+    if callable(remote):  # fetch remote md5s only for the archive files the candidates map to
+        remote = remote({v[3] for _c, v in local if v[0]})
+    remote = {nfc(k): v for k, v in remote.items()}
+    for c, (ok, why, n, arc, md5) in local:
+        if ok:
+            ok, why, n = check_remote(arc, md5, remote, n)
         if not ok:
             s["kept"][why] = s["kept"].get(why, 0) + 1
             continue
@@ -234,7 +280,7 @@ def main(argv=None) -> int:
     if a.days < 1:
         raise SystemExit("--days must be >= 1")
     cur = open_db(Path(a.sql_src))
-    remote = remote_media_md5s(a.remote)
+    remote = lambda arcs: remote_media_md5s(a.remote, arcs)  # noqa: E731
     s = prune(cur, Path(a.signal_dir), Path(a.out), a.days, remote, a.dry_run)
     print("PRUNE_SUMMARY " + json.dumps(s, sort_keys=True), flush=True)
     return 0

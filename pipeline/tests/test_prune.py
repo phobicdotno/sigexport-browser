@@ -77,6 +77,32 @@ class PruneTest(unittest.TestCase):
         (self.out / "_state" / "media_index.tsv").write_text("\n".join(self.index) + "\n", encoding="utf-8")
         return P.prune(self.db.cursor(), self.sig, self.out, 30, self.remote, dry, now_ms=NOW)
 
+    def test_nfd_archive_name_matches_nfc_remote_and_only_needed_paths_fetched(self):
+        import unicodedata
+        nfd = unicodedata.normalize("NFD", "bilde_\u00e6\u00f8\u00e5")
+        rel = self.add(nfd, 60)
+        self.add("nyere", 5)
+        arc = f"Media/Pictures/{nfd}.jpg"
+        nfc_remote = {unicodedata.normalize("NFC", k): v for k, v in self.remote.items()}
+        self.assertNotIn(arc, nfc_remote)  # literal lookup would miss it
+        asked = []
+
+        def fetch(arcs):
+            asked.append(set(arcs))
+            return {k: v for k, v in nfc_remote.items() if unicodedata.normalize("NFC", k) in
+                    {unicodedata.normalize("NFC", a) for a in arcs}}
+        (self.out / "_state" / "media_index.tsv").write_text("\n".join(self.index) + "\n", encoding="utf-8")
+        s = P.prune(self.db.cursor(), self.sig, self.out, 30, fetch, False, now_ms=NOW)
+        self.assertEqual(s["pruned_files"], 1)
+        self.assertFalse((self.att / rel).exists())
+        self.assertEqual(asked, [{arc}])  # only the candidate's archive counterpart
+
+    def test_parse_md5sum_normalises_to_nfc(self):
+        import unicodedata
+        line = "0" * 32 + "  " + unicodedata.normalize("NFD", "Pictures/\u00e6\u00f8\u00e5.jpg")
+        self.assertEqual(P.parse_md5sum(line, "Media/"),
+                         {unicodedata.normalize("NFC", "Media/Pictures/\u00e6\u00f8\u00e5.jpg"): "0" * 32})
+
     def test_old_verified_deleted_new_and_unverified_kept(self):
         old = self.add("old", 60)
         new = self.add("new", 5)

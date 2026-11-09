@@ -5,14 +5,15 @@
 #   OUT          archive folder (default ~/SignalExport)
 #   PY           python interpreter (default /opt/homebrew/bin/python3.13)
 #   SYNC_PY      path to pipeline/sync.py
-#   SYNC_ARGS    extra args (default "--upload --quit-signal")
+#   SYNC_ARGS    extra args (default "--upload --quit-signal --full-check": the nightly run checks
+#                the whole archive on the remote; manual syncs check only the files they uploaded)
 #   MIN_BATTERY  percent (default 30)
 #   PRUNE_SIGNAL_DAYS  prune Signal Desktop attachments older than N days after a verified
 #                upload (default 30, 0 = off; sync.py only prunes with --upload + passed rclone check)
 OUT="${OUT:-$HOME/SignalExport}"
 PY="${PY:-/opt/homebrew/bin/python3.13}"
 SYNC_PY="${SYNC_PY:-$(cd "$(dirname "$0")/.." && pwd)/pipeline/sync.py}"
-SYNC_ARGS="${SYNC_ARGS:---upload --quit-signal}"
+SYNC_ARGS="${SYNC_ARGS:---upload --quit-signal --full-check}"
 MIN_BATTERY="${MIN_BATTERY:-30}"
 export PRUNE_SIGNAL_DAYS="${PRUNE_SIGNAL_DAYS:-30}"
 mkdir -p "$OUT/_state"

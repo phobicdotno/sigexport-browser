@@ -4,11 +4,17 @@
 Usage: python3 sync.py --out ~/SignalExport [--upload] [--dry-run] [--quit-signal]
        python3 sync.py --setup-key            (one-time, interactive; see README "Sync")
 
-Steps: lock -> disk guard -> DB snapshot (OUT/_work/src) -> full sigexport into
-OUT/_work/sync_tmp -> per chat: match to NNN (conversation id via _state/conv_map.tsv,
+Steps: lock -> disk guard -> DB snapshot (OUT/_work/src) -> sigexport into OUT/_work/sync_tmp
+(incremental: only conversations whose DB fingerprint count:max(received_at):max(rowid) changed
+since _state/sync_watermarks.tsv, plus deferred and new ones; full with --full, without
+watermarks, or weekly. Edits and reactions do not change the fingerprint and merge-only never
+applies them to existing lines anyway; the weekly full export picks up anything else) -> per chat: match to NNN (conversation id via _state/conv_map.tsv,
 else the real subfolder name inside NNN_*/; ambiguous -> skip; unknown cid -> new NNN) -> append messages that
 are not in data.json yet -> hard-link backup, write, central media, link check (restore
-on failure) -> rebuild viewer -> optional rclone copy + check --one-way.
+on failure) -> rebuild viewer (all chats, ~40 s: build_viewer numbers chats globally and swaps
+whole dirs) -> optional rclone copy + check --one-way of only the files this run changed
+(--files-from --no-traverse; viewer outputs compared by md5); --full-check (03:00 job) also
+checks the whole archive. Every step logs step=X secs=Y.
 
 Merge rules (same keys as the phone merge): a new message matches an existing one when
   date (ms) + sender are equal, or
@@ -50,6 +56,9 @@ DEFER_DAYS = 30  # new messages whose attachment file is not in the source yet w
 SERVER_KEYS = ("server_ts", "serverTimestamp", "sent_at")
 MD_HEAD = re.compile(r"^\[(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d)\] ")
 UPLOAD_EXCLUDES_FILE = HERE.parent / "tools" / "upload_excludes.txt"
+FULL_EXPORT_EVERY = 7 * 86400  # weekly full export (reactions/edits, anything a fingerprint misses)
+WATERMARKS = "sync_watermarks.tsv"
+VIEWER_OUTPUTS = ("data/", "search/", "index_data.js", "build_stamp.js")
 
 
 def load_upload_excludes(path: Path = UPLOAD_EXCLUDES_FILE) -> list[str]:
@@ -119,6 +128,8 @@ class Run:
                    "pruned_files": 0, "pruned_bytes": 0,
                    "message": "dry run" if dry else ""}
         self.upload_ok = False  # set by sync() only when rclone copy AND check --one-way passed
+        self.full_check = False
+        self._step_t = None  # (name, start monotonic) of the running step, for step=X secs=Y
         self.write_status()
 
     def log(self, msg: str) -> None:
@@ -136,7 +147,15 @@ class Run:
             os.fsync(f.fileno())
         os.replace(tmp, p)
 
+    def close_step(self) -> None:
+        if self._step_t:
+            name, t0 = self._step_t
+            self.log(f"step={name} secs={time.monotonic() - t0:.1f}")
+            self._step_t = None
+
     def step(self, step: str, progress: float, message: str | None = None) -> None:
+        self.close_step()
+        self._step_t = (step, time.monotonic())
         self.st["step"], self.st["progress"] = step, round(min(1.0, max(0.0, progress)), 3)
         if message is not None:
             self.st["message"] = message
@@ -144,6 +163,7 @@ class Run:
         self.log(f"step={step} progress={self.st['progress']}")
 
     def end(self, ok: bool, message: str) -> None:
+        self.close_step()
         self.st.update(state="done" if ok else "failed", finished=now_iso(), message=message)
         if ok:
             self.st["progress"] = 1.0
@@ -446,13 +466,63 @@ def snapshot(run: Run, quit_signal: bool) -> Path:
     return work
 
 
-def run_export(run: Run, src: Path, tmp: Path, abort_free: float) -> None:
+def read_wm_meta(state: Path) -> dict:
+    meta = {}
+    p = state / WATERMARKS
+    if p.is_file():
+        for line in p.read_text(encoding="utf-8").splitlines():
+            q = line.split("\t")
+            if q[0].startswith("#") and len(q) == 2:
+                meta[q[0][1:]] = q[1]
+    return meta
+
+
+def want_full_export(state: Path, force: bool, now: float | None = None) -> str | None:
+    """Reason for a full export, or None for an incremental one."""
+    if force:
+        return "--full"
+    if not (state / WATERMARKS).is_file():
+        return "no watermarks"
+    try:
+        last = float(read_wm_meta(state).get("last_full", 0))
+    except ValueError:
+        last = 0
+    if (time.time() if now is None else now) - last >= FULL_EXPORT_EVERY:
+        return "weekly"
+    return None
+
+
+def write_watermarks(state: Path, tmp: Path, failed_cids: set, deferred: dict, was_full: bool) -> int:
+    """New watermarks from this run's DB fingerprints (tmp/_fingerprints.tsv). Conversations whose
+    merge failed get no watermark, so the next run exports them again (as if new); deferred
+    counts make the next run retry those chats. Returns the number of rows or -1 if none."""
+    fp_p = tmp / "_fingerprints.tsv"
+    if not fp_p.is_file():
+        return -1
+    fp = {}
+    for line in fp_p.read_text(encoding="utf-8").splitlines():
+        q = line.split("\t")
+        if len(q) == 2:
+            fp[q[0]] = q[1]
+    if not fp:
+        return -1
+    meta = read_wm_meta(state)
+    last_full = str(int(time.time())) if was_full else meta.get("last_full", "0")
+    rows = [f"#last_full\t{last_full}\n"] + [f"{c}\t{f}\t{deferred.get(c, 0)}\n"
+                                              for c, f in sorted(fp.items()) if c not in failed_cids]
+    p = state / WATERMARKS
+    D.atomic_write(str(p), "".join(rows))
+    return len(rows) - 1
+
+
+def run_export(run: Run, src: Path, tmp: Path, abort_free: float, full: bool = True) -> None:
     shutil.rmtree(tmp, ignore_errors=True)
     tmp.parent.mkdir(parents=True, exist_ok=True)
     py = sigexport_python()
     env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
     with open(run.state / "sync_sigexport.out", "w", encoding="utf-8") as out:
-        p = subprocess.Popen([py, str(HERE / "sync_export.py"), "export", str(src), str(tmp), str(run.out)],
+        wm = [] if full else ["--watermarks", str(run.state / WATERMARKS)]
+        p = subprocess.Popen([py, str(HERE / "sync_export.py"), "export", str(src), str(tmp), str(run.out), *wm],
                              stdout=out, stderr=subprocess.STDOUT, env=env)
         while True:
             try:
@@ -464,6 +534,88 @@ def run_export(run: Run, src: Path, tmp: Path, abort_free: float) -> None:
                     raise SystemExit(f"disk below ABORT_FREE_GIB={abort_free}")
     if rc != 0:
         raise SystemExit(f"sigexport failed rc={rc} (see _state/sync_sigexport.out)")
+
+
+# ---------------------------------------------------------------- incremental upload list
+def glob_regex(pat: str) -> re.Pattern:
+    """rclone filter glob -> regex on a '/'-separated path relative to the archive root:
+    ** any chars, * and ? within one path segment; unanchored patterns match at any depth."""
+    anchored = pat.startswith("/")
+    p, i, rx = pat.lstrip("/"), 0, ""
+    while i < len(p):
+        if p.startswith("**", i):
+            rx, i = rx + ".*", i + 2
+        elif p[i] == "*":
+            rx, i = rx + "[^/]*", i + 1
+        elif p[i] == "?":
+            rx, i = rx + "[^/]", i + 1
+        else:
+            rx, i = rx + re.escape(p[i]), i + 1
+    return re.compile(("^" if anchored else "(^|/)") + rx + "$")
+
+
+def excluder(patterns: list[str]):
+    rxs = [glob_regex(x) for x in patterns]
+    return lambda rel: any(r.search(rel) for r in rxs)
+
+
+def file_md5(p: Path) -> str:
+    import hashlib
+    h = hashlib.md5()
+    with open(p, "rb") as f:
+        for b in iter(lambda: f.read(1 << 20), b""):
+            h.update(b)
+    return h.hexdigest()
+
+
+def tree_state(out: Path, excluded) -> dict:
+    """{rel: (size, mtime_ns[, md5])} for every uploadable file; viewer outputs (rebuilt wholesale
+    by build_viewer.py) also carry an md5 so unchanged ones are not re-uploaded."""
+    res = {}
+    for d, dirs, files in os.walk(out):
+        rd_ = os.path.relpath(d, out).replace(os.sep, "/")
+        rd_ = "" if rd_ == "." else rd_ + "/"
+        dirs[:] = [x for x in dirs if not excluded(rd_ + x + "/_")]
+        for fn in files:
+            rel = rd_ + fn
+            if excluded(rel):
+                continue
+            try:
+                st = os.stat(os.path.join(d, fn))
+            except OSError:
+                continue
+            v = (st.st_size, st.st_mtime_ns)
+            if rel.startswith("viewer/") and rel[7:].startswith(VIEWER_OUTPUTS):
+                v += (file_md5(Path(d) / fn),)
+            res[rel] = v
+    return res
+
+
+def changed_files(before: dict, after: dict) -> list[str]:
+    out = []
+    for rel, v in after.items():
+        b = before.get(rel)
+        if b is None or (len(v) == 3 and len(b) == 3 and (b[0], b[2]) != (v[0], v[2])) \
+                or (len(v) == 2 and b != v):
+            out.append(rel)
+    return sorted(out)
+
+
+def upload_files(run: Run, remote: str, files: list[str], ex: list[str]) -> tuple[int, int]:
+    """rclone copy + check --one-way limited to files (relative paths, --no-traverse)."""
+    state = run.state
+    lst = state.parent / "_work" / "upload_files.txt"
+    lst.parent.mkdir(parents=True, exist_ok=True)
+    lst.write_text("".join(f + "\n" for f in files), encoding="utf-8")
+    if not files:
+        return 0, 0
+    rc = subprocess.run(["rclone", "copy", str(run.out), remote, "--files-from", str(lst), "--no-traverse", *ex,
+                         "--transfers", "4", "--checkers", "8", "--retries", "5",
+                         "--log-file", str(state / "upload.log"), "--log-level", "INFO"]).returncode
+    with open(state / "upload_check.log", "w") as f:
+        crc = subprocess.run(["rclone", "check", str(run.out), remote, "--one-way", "--files-from", str(lst), *ex,
+                              "--checkers", "8"], stdout=f, stderr=subprocess.STDOUT).returncode
+    return rc, crc
 
 
 # ---------------------------------------------------------------- main sync
@@ -485,9 +637,12 @@ def sync(run: Run, tmp: Path, upload: bool, remote: str | None) -> int:
             if len(p) == 2:
                 cids.setdefault(p[1], p[0])
     chats = sorted(d for d in tmp.iterdir() if d.is_dir() and (d / "data.json").is_file())
+    excludes = load_upload_excludes() if upload else []
+    tree_before = tree_state(out, excluder(excludes)) if upload and not run.dry else {}
     central = None if run.dry else CM.Central(str(out), str(state), str(out / "_work"))
     nxt = max(used | {0}) + 1
     changed, failed = [], []
+    failed_cids, deferred_by_cid = set(), {}
     for i, src_inner in enumerate(chats):
         run.st["progress"] = round(0.3 + 0.5 * i / max(1, len(chats)), 3)
         name = src_inner.name
@@ -507,6 +662,8 @@ def sync(run: Run, tmp: Path, upload: bool, remote: str | None) -> int:
             dst_inner = out / top / sub
         plan = plan_chat(src_inner, dst_inner if dst_inner.is_dir() else None)
         if plan["deferred"]:
+            if cid:
+                deferred_by_cid[cid] = plan["deferred"]
             run.st["deferred_messages"] = run.st.get("deferred_messages", 0) + plan["deferred"]
             run.log(f"chat NNN={idx:03d} deferred={plan['deferred']} (attachment not in source yet)")
         if not plan["add"]:
@@ -547,6 +704,8 @@ def sync(run: Run, tmp: Path, upload: bool, remote: str | None) -> int:
             elif is_new:
                 shutil.rmtree(out / top, ignore_errors=True)
             failed.append(idx)
+            if cid:
+                failed_cids.add(cid)
         run.write_status()
     run.step("viewer", 0.85)
     if not run.dry and changed:
@@ -556,17 +715,34 @@ def sync(run: Run, tmp: Path, upload: bool, remote: str | None) -> int:
         if r.returncode != 0:
             run.log("viewer rebuild failed")
             failed.append(-1)
+    if not run.dry and -1 not in failed:
+        sel = tmp / "_selected.tsv"
+        was_full = sel.is_file() and sel.read_text(encoding="utf-8").strip() == "*"
+        n = write_watermarks(state, tmp, failed_cids, deferred_by_cid, was_full)
+        if n >= 0:
+            run.log(f"watermarks={n} full={int(was_full)} failed={len(failed_cids)} deferred={len(deferred_by_cid)}")
     if upload and not run.dry:
         run.step("upload", 0.9)
         if not remote:
             raise SystemExit("--upload needs REMOTE")
-        ex = [a for e in load_upload_excludes() for a in ("--exclude", e)]
-        rc = subprocess.run(["rclone", "copy", str(out), remote, *ex, "--transfers", "4", "--checkers", "8",
-                             "--retries", "5", "--log-file", str(state / "upload.log"), "--log-level", "INFO"]).returncode
-        with open(state / "upload_check.log", "w") as f:
-            crc = subprocess.run(["rclone", "check", str(out), remote, "--one-way", *ex, "--checkers", "8"],
-                                 stdout=f, stderr=subprocess.STDOUT).returncode
-        run.log(f"upload rc={rc} check rc={crc}")
+        ex = [a for e in excludes for a in ("--exclude", e)]
+        after = tree_state(out, excluder(excludes))
+        pend = out / "_work" / "upload_pending.txt"  # files a failed earlier upload still owes
+        owed = set(D.rd(str(pend)).splitlines()) if pend.is_file() else set()
+        files = sorted(set(changed_files(tree_before, after)) | (owed & set(after)))
+        rc, crc = upload_files(run, remote, files, ex)
+        run.log(f"upload files={len(files)} owed={len(owed)} rc={rc} check rc={crc}")
+        if rc or crc:
+            pend.parent.mkdir(parents=True, exist_ok=True)
+            D.atomic_write(str(pend), "".join(f + "\n" for f in files))
+        else:
+            pend.unlink(missing_ok=True)
+        if run.full_check and not rc and not crc:
+            run.step("full_check", 0.93)
+            with open(state / "upload_check.log", "a") as f:
+                crc = subprocess.run(["rclone", "check", str(out), remote, "--one-way", *ex, "--checkers", "8"],
+                                     stdout=f, stderr=subprocess.STDOUT).returncode
+            run.log(f"full check rc={crc}")
         if rc or crc:
             failed.append(-2)
         else:
@@ -658,6 +834,10 @@ def main(argv=None) -> int:
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--quit-signal", action="store_true")
     ap.add_argument("--setup-key", action="store_true", help="one-time: store the DB key in the login Keychain")
+    ap.add_argument("--full", action="store_true", help="export every chat (default: only chats changed since "
+                    "the last sync, plus deferred and new ones; a full export runs weekly anyway)")
+    ap.add_argument("--full-check", action="store_true", help="after the upload, rclone check --one-way the "
+                    "whole archive (the 03:00 job does; normal syncs check only the files they uploaded)")
     ap.add_argument("--from-export", help=argparse.SUPPRESS)  # tests: use an existing sigexport dir
     ap.add_argument("--min-free", type=float, default=float(e("MIN_FREE_GIB", "8")))
     ap.add_argument("--abort-free", type=float, default=float(e("ABORT_FREE_GIB", "3")))
@@ -679,6 +859,7 @@ def main(argv=None) -> int:
         print("sync already running", file=sys.stderr)
         return EX_BUSY
     run = Run(out, a.dry_run)
+    run.full_check = a.full_check
     pruned = None
     try:
         if a.prune_dry_run:
@@ -694,9 +875,11 @@ def main(argv=None) -> int:
         else:
             run.step("snapshot", 0.05)
             src = snapshot(run, a.quit_signal)
+            why = want_full_export(run.state, a.full)
             run.step("export", 0.1)
+            run.log(f"export mode={'full' if why else 'incremental'}" + (f" ({why})" if why else ""))
             tmp = out / "_work" / "sync_tmp"
-            run_export(run, src, tmp, a.abort_free)
+            run_export(run, src, tmp, a.abort_free, full=bool(why))
         run.step("merge", 0.3)
         rc = sync(run, tmp, a.upload, e("REMOTE"))
         pruned = maybe_prune(run, a.prune_signal_days, a.upload, rc, e("REMOTE"))
