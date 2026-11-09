@@ -14,7 +14,7 @@ var I18N={
   deleted:'Deleted message',call:'Call',missed:'Missed call',unknownDate:'Unknown date',older:'Scroll up for older messages ({n})',
   noHits:'0 matches',noMedia:'No photos or videos in this chat.',prevHit:'Previous match',nextHit:'Next match',
   zoom:'Zoom',smaller:'Smaller',larger:'Larger',close:'Close (Esc)',fullscreen:'Fullscreen (F)',prev:'Previous',next:'Next',gsearch:'Search all chats',home:'Home',none:'No matches',hitsN:'{n} matches',inChats:'in {n} chats',from:'From',to:'To',sender:'Sender',chatF:'Chat',all:'All',images:'Photos',video:'Video',audio:'Audio',files:'Files',links:'Links',backRes:'Back to results',newest:'Newest first',oldest:'Oldest first',relevance:'Relevance',searching:'Searching…',newer:'Scroll down for newer messages ({n})',
-  sync:'Sync new messages',syncStarting:'Starting sync…',syncRun:'Syncing: {step} · {p} %',syncDone:'+{n} messages, +{m} media',syncDoneChats:'+{n} messages, +{m} media, +{c} chats',syncBusy:'A sync is already running',syncFail:'Sync failed: {msg}',syncNoHelper:'Sync helper not running. Run tools/install_sync.py again.',syncAuth:'Sync helper rejected the token. Run tools/install_sync.py again.',
+  sync:'Sync new messages',syncStarting:'Starting sync…',syncRun:'Syncing: {step} · {p} %',syncDone:'+{n} messages, +{m} media',syncDoneChats:'+{n} messages, +{m} media, +{c} chats',syncBusy:'A sync is already running',syncFail:'Sync failed: {msg}',syncNoHelper:'The sync helper is not answering. Open the “Signal Sync” app or run install_sync.sh again.',syncConnecting:'Connecting to the sync helper…',syncAuth:'Sync helper rejected the token. Run tools/install_sync.py again.',
   download:'Download (D)',dlFile:'Download',dlAll:'Download all',dlAllTip:'Download all photos and videos in this chat',dlConfirm:'Download {n} files?',
   dlHint:'If it opened in a new tab instead: press ⌘S (Ctrl+S) or right-click → Save',dlZip:'Preparing zip of {n} files…',dlSeq:'Downloading {i} / {n}… allow multiple downloads if the browser asks',
   dlNeedHelper:'Download all needs the local helper when the viewer is opened as a file: run tools/install_sync.py, then try again.',showLog:'Show log',logTitle:'Sync log',copy:'Copy',copied:'Copied',syncFailOne:'1 chat failed – nothing was lost, it was rolled back',syncFailN:'{n} chats failed – nothing was lost, they were rolled back'},
@@ -26,7 +26,7 @@ var I18N={
   deleted:'Slettet melding',call:'Anrop',missed:'Tapt anrop',unknownDate:'Ukjent dato',older:'Rull opp for eldre meldinger ({n})',
   noHits:'0 treff',noMedia:'Ingen bilder eller videoer i denne samtalen.',prevHit:'Forrige treff',nextHit:'Neste treff',
   zoom:'Zoom',smaller:'Mindre',larger:'Større',close:'Lukk (Esc)',fullscreen:'Fullskjerm (F)',prev:'Forrige',next:'Neste',gsearch:'Søk i alle samtaler',home:'Hjem',none:'Ingen treff',hitsN:'{n} treff',inChats:'i {n} samtaler',from:'Fra',to:'Til',sender:'Avsender',chatF:'Samtale',all:'Alle',images:'Bilder',video:'Video',audio:'Lyd',files:'Filer',links:'Lenker',backRes:'Tilbake til resultater',newest:'Nyeste først',oldest:'Eldste først',relevance:'Relevans',searching:'Søker…',newer:'Rull ned for nyere meldinger ({n})',
-  sync:'Synkroniser nye meldinger',syncStarting:'Starter synkronisering…',syncRun:'Synkroniserer: {step} · {p} %',syncDone:'+{n} meldinger, +{m} media',syncDoneChats:'+{n} meldinger, +{m} media, +{c} samtaler',syncBusy:'En synkronisering kjører allerede',syncFail:'Synkronisering feilet: {msg}',syncNoHelper:'Synk-hjelperen kjører ikke. Kjør tools/install_sync.py på nytt.',syncAuth:'Synk-hjelperen avviste nøkkelen. Kjør tools/install_sync.py på nytt.',
+  sync:'Synkroniser nye meldinger',syncStarting:'Starter synkronisering…',syncRun:'Synkroniserer: {step} · {p} %',syncDone:'+{n} meldinger, +{m} media',syncDoneChats:'+{n} meldinger, +{m} media, +{c} samtaler',syncBusy:'En synkronisering kjører allerede',syncFail:'Synkronisering feilet: {msg}',syncNoHelper:'Synk-hjelperen svarer ikke. Åpne «Signal Sync»-appen eller kjør install_sync.sh på nytt.',syncConnecting:'Kobler til synk-hjelperen…',syncAuth:'Synk-hjelperen avviste nøkkelen. Kjør tools/install_sync.py på nytt.',
   download:'Last ned (D)',dlFile:'Last ned',dlAll:'Last ned alle',dlAllTip:'Last ned alle bilder og videoer i samtalen',dlConfirm:'Laste ned {n} filer?',
   dlHint:'Åpnet den seg i en ny fane i stedet? Trykk ⌘S (Ctrl+S) eller høyreklikk → Lagre',dlZip:'Lager zip med {n} filer…',dlSeq:'Laster ned {i} / {n}… tillat flere nedlastinger hvis nettleseren spør',
   dlNeedHelper:'«Last ned alle» trenger den lokale hjelperen når viewer åpnes som fil: kjør tools/install_sync.py og prøv igjen.',showLog:'Vis logg',logTitle:'Synkroniseringslogg',copy:'Kopier',copied:'Kopiert',syncFailOne:'1 samtale feilet – ingenting gikk tapt, den ble satt tilbake',syncFailN:'{n} samtaler feilet – ingenting gikk tapt, de ble satt tilbake'}
@@ -541,14 +541,25 @@ window.__openChat=openChat;window.__search=function(v){tools(true,true);$('searc
     function ok(){b.textContent=T('copied');setTimeout(function(){b.textContent=T('copy')},1500)}
     if(navigator.clipboard&&navigator.clipboard.writeText)navigator.clipboard.writeText(t).then(ok,legacy);else legacy();
     function legacy(){var ta=document.createElement('textarea');ta.value=t;document.body.appendChild(ta);ta.select();try{document.execCommand('copy');ok()}catch(e){}ta.remove()}};
-  function poll(){req('GET','/status').then(function(r){if(r.code!==200)return fail(r.j.error,r.code);onStatus(r.j)},function(){fail()})}
+  // helper unreachable (restart, KeepAlive relaunch): keep retrying with backoff, "connecting…" for 60 s,
+  // then the plain-language hint; the message clears by itself once the helper answers again
+  var downSince=0,retryT=null,retryMs=1000,pendingStart=false;
+  function unreachable(){stop();clearTimeout(retryT);if(!downSince)downSince=Date.now();
+    if(Date.now()-downSince>60000)show('err',T('syncNoHelper'));else show('',T('syncConnecting'),0),btn.classList.remove('spin');
+    retryT=setTimeout(reconnect,retryMs);retryMs=Math.min(retryMs*2,8000)}
+  function reconnect(){req('GET','/status').then(function(r){var was=downSince;downSince=0;retryMs=1000;
+      if(r.code!==200)return fail(r.j.error,r.code);
+      if(pendingStart){pendingStart=false;return start()}
+      if(r.j.state==='running'||seenRun)return watch();
+      if(was){bar.hidden=true;$('syncmsg').textContent=''}},unreachable)}
+  function poll(){req('GET','/status').then(function(r){downSince=0;retryMs=1000;if(r.code!==200)return fail(r.j.error,r.code);onStatus(r.j)},unreachable)}
   function watch(){if(timer)return;timer=setInterval(poll,2000);poll()}
-  btn.addEventListener('click',function(){
-    if(timer)return;since=Date.now();seenRun=false;show('',T('syncStarting'),0);
-    req('POST','/sync').then(function(r){
+  function start(){since=Date.now();seenRun=false;show('',T('syncStarting'),0);
+    req('POST','/sync').then(function(r){downSince=0;retryMs=1000;
       if(r.code===202)return watch();
       if(r.code===409){show('',T('syncBusy'),0);seenRun=true;return watch()}
-      fail(r.j.error,r.code)},function(){fail()})});
+      fail(r.j.error,r.code)},function(){pendingStart=true;unreachable()})}
+  btn.addEventListener('click',function(){if(timer||retryT&&downSince)return;start()});
   // on load: pick up a sync started elsewhere (Dock app, 03:00 job) or a result from just before a reload
   req('GET','/status').then(function(r){if(r.code!==200)return;var s=r.j,f=Date.parse(s.finished||'');
     if(s.state==='running'){seenRun=true;watch()}else if(!isNaN(f)&&Date.now()-f<120000){if(s.state==='done')done(s);else if(s.state==='failed')failed(s)}},function(){});

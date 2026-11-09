@@ -1,5 +1,8 @@
 # Changelog
 
+## v0.1.44 (build 22) — 2026-11-09
+- Viewer sync bar forgiving when the helper is briefly unreachable (restart/KeepAlive relaunch): retries /status with backoff (1 s doubling to 8 s) showing "Connecting to the sync helper…" / "Kobler til synk-hjelperen…", clears by itself when it answers (a click made while it was down is replayed), and only after 60 s unreachable shows the plain hint "Synk-hjelperen svarer ikke. Åpne «Signal Sync»-appen eller kjør install_sync.sh på nytt."
+
 ## v0.1.43 (build 21) — 2026-11-09
 - Viewer download: Download button (icon, tooltip, key D, en/nb) in the lightbox top bar and on file cards; saves the original file under its attachment name (else the stored name) via <a href download target=_blank>; on file:// Chrome ignores download= (opaque origins, tested headless) so the file opens in a new tab with a one-time "⌘S / right-click → Save" hint, never navigating the viewer away
 - Media tab "Download all": with the helper, POST /zip-ticket (token) returns a 60 s single-use ticket and GET /media.zip?chat=N&ticket=T streams a zip (ZIP_STORED, original names, deduped) of that chat's photos/videos, only files listed in viewer/data/N.js and resolved inside OUT/Media or the chat's folder; without the helper over http(s): sequential downloads with a "Download N files?" confirm above 20; on file:// without helper a hint to install it
