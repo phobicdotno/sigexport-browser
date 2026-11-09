@@ -1,5 +1,8 @@
 # Changelog
 
+## v0.1.46 (build 24) — 2026-11-09
+- Viewer version label: tiny muted "v0.1.46" (10px, theme --sub colour) centred under the avatar, tooltip "v0.1.46 (build 24) · data 09.11 20:05"; build_viewer.py writes `__VIEWER_VERSION` (repo VERSION or viewer/VERSION, else "dev") and `__BUILD_TIME` into build_stamp.js; tools/install_sync.py `copy_viewer_files()` sets `CODE_VERSION` in the copied viewer.js, writes viewer/VERSION and also copies build_viewer.py; when the polled stamp's version differs from the running viewer.js the label turns accent "new version – press F5" / "ny versjon – trykk F5" (click reloads)
+
 ## v0.1.45 (build 23) — 2026-11-09
 - Viewer single-file Download saves straight to disk on file://: helper POST /file-ticket?chat=N&ref=R (token, ref must be an ok attachment listed in viewer/data/N.js, resolved inside OUT/Media or the chat's folder) returns a 60 s single-use ticket, GET /file?ticket=T streams the file with Content-Disposition attachment; filename*=UTF-8'' original name, Content-Type, Content-Length; zip and file tickets are not interchangeable; viewer falls back to new tab + ⌘S hint when the helper is down or slow (1.5 s), plain <a download> over http(s); tests for ticket, traversal, unlisted ref, header and expiry; headless Chrome check on synthetic fixture: file downloads, no new tab
 

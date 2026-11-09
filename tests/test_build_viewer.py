@@ -29,6 +29,21 @@ class BuildViewerTest(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         return r.stdout
 
+
+    def test_stamp_carries_version_and_install_copy_sets_code_version(self):
+        self.build()
+        self.assertIn("window.__VIEWER_VERSION=\"dev\";", (self.out / 'build_stamp.js').read_text(encoding='utf-8'))
+        sys.path.insert(0, str(REPO / 'tools'))
+        import install_sync
+        v = install_sync.copy_viewer_files(self.out)
+        self.assertEqual(v, (REPO / 'VERSION').read_text(encoding='utf-8').strip())
+        self.assertEqual((self.out / 'VERSION').read_text(encoding='utf-8').strip(), v)
+        self.assertIn("var CODE_VERSION='%s';" % v, (self.out / 'viewer.js').read_text(encoding='utf-8'))
+        self.assertIn("var CODE_VERSION='dev';", (REPO / 'viewer' / 'viewer.js').read_text(encoding='utf-8'))
+        self.build()
+        stamp = (self.out / 'build_stamp.js').read_text(encoding='utf-8')
+        self.assertIn('window.__VIEWER_VERSION="%s";' % v, stamp)
+        self.assertRegex(stamp, r"__BUILD_TIME='\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d'")
     def chats(self):
         res = {}
         for f in sorted((self.out / 'data').glob('*.js')):

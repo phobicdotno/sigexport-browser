@@ -17,7 +17,7 @@ var I18N={
   sync:'Sync new messages',syncStarting:'Starting sync…',syncRun:'Syncing: {step} · {p} %',syncDone:'+{n} messages, +{m} media',syncDoneChats:'+{n} messages, +{m} media, +{c} chats',syncBusy:'A sync is already running',syncFail:'Sync failed: {msg}',syncNoHelper:'The sync helper is not answering. Open the “Signal Sync” app or run install_sync.sh again.',syncConnecting:'Connecting to the sync helper…',syncAuth:'Sync helper rejected the token. Run tools/install_sync.py again.',
   download:'Download (D)',dlFile:'Download',dlAll:'Download all',dlAllTip:'Download all photos and videos in this chat',dlConfirm:'Download {n} files?',
   dlHint:'If it opened in a new tab instead: press ⌘S (Ctrl+S) or right-click → Save',dlZip:'Preparing zip of {n} files…',dlSeq:'Downloading {i} / {n}… allow multiple downloads if the browser asks',
-  dlNeedHelper:'Download all needs the local helper when the viewer is opened as a file: run tools/install_sync.py, then try again.',showLog:'Show log',logTitle:'Sync log',copy:'Copy',copied:'Copied',syncFailOne:'1 chat failed – nothing was lost, it was rolled back',syncFailN:'{n} chats failed – nothing was lost, they were rolled back'},
+  dlNeedHelper:'Download all needs the local helper when the viewer is opened as a file: run tools/install_sync.py, then try again.',showLog:'Show log',logTitle:'Sync log',copy:'Copy',copied:'Copied',syncFailOne:'1 chat failed – nothing was lost, it was rolled back',syncFailN:'{n} chats failed – nothing was lost, they were rolled back',newVer:'new version – press F5',verData:'data'},
  nb:{locale:'nb-NO',search:'Søk',searchChat:'Søk i samtalen',back:'Tilbake',media:'Media',messages:'Meldinger',
   pick:'Velg en samtale',pickHint:'Ingen samtaler? Kjør build_viewer.py på nytt etter flere eksporter.',readonly:'Arkiv – skrivebeskyttet',
   today:'I dag',yesterday:'I går',you:'Deg',youSubj:'Du',unavailable:'Media utilgjengelig',audioUnavailable:'Lyd utilgjengelig',
@@ -29,7 +29,7 @@ var I18N={
   sync:'Synkroniser nye meldinger',syncStarting:'Starter synkronisering…',syncRun:'Synkroniserer: {step} · {p} %',syncDone:'+{n} meldinger, +{m} media',syncDoneChats:'+{n} meldinger, +{m} media, +{c} samtaler',syncBusy:'En synkronisering kjører allerede',syncFail:'Synkronisering feilet: {msg}',syncNoHelper:'Synk-hjelperen svarer ikke. Åpne «Signal Sync»-appen eller kjør install_sync.sh på nytt.',syncConnecting:'Kobler til synk-hjelperen…',syncAuth:'Synk-hjelperen avviste nøkkelen. Kjør tools/install_sync.py på nytt.',
   download:'Last ned (D)',dlFile:'Last ned',dlAll:'Last ned alle',dlAllTip:'Last ned alle bilder og videoer i samtalen',dlConfirm:'Laste ned {n} filer?',
   dlHint:'Åpnet den seg i en ny fane i stedet? Trykk ⌘S (Ctrl+S) eller høyreklikk → Lagre',dlZip:'Lager zip med {n} filer…',dlSeq:'Laster ned {i} / {n}… tillat flere nedlastinger hvis nettleseren spør',
-  dlNeedHelper:'«Last ned alle» trenger den lokale hjelperen når viewer åpnes som fil: kjør tools/install_sync.py og prøv igjen.',showLog:'Vis logg',logTitle:'Synkroniseringslogg',copy:'Kopier',copied:'Kopiert',syncFailOne:'1 samtale feilet – ingenting gikk tapt, den ble satt tilbake',syncFailN:'{n} samtaler feilet – ingenting gikk tapt, de ble satt tilbake'}
+  dlNeedHelper:'«Last ned alle» trenger den lokale hjelperen når viewer åpnes som fil: kjør tools/install_sync.py og prøv igjen.',showLog:'Vis logg',logTitle:'Synkroniseringslogg',copy:'Kopier',copied:'Kopiert',syncFailOne:'1 samtale feilet – ingenting gikk tapt, den ble satt tilbake',syncFailN:'{n} samtaler feilet – ingenting gikk tapt, de ble satt tilbake',newVer:'ny versjon – trykk F5',verData:'data'}
 };
 var LANG=I18N[CFG.lang]?CFG.lang:'en',L=I18N[LANG];
 function T(k,v){var s=L[k]!=null?L[k]:(I18N.en[k]!=null?I18N.en[k]:k);if(v)Object.keys(v).forEach(function(x){s=s.split('{'+x+'}').join(v[x])});return s}
@@ -582,6 +582,16 @@ window.__openChat=openChat;window.__search=function(v){tools(true,true);$('searc
 // On change: save chat/scroll/tab/query to sessionStorage and reload; never while the lightbox,
 // fullscreen or a text field is in use (retried on every poll until idle).
 var STAMP0=window.__BUILD_STAMP||null,stale=false;
+// ---- version label under the avatar: CODE_VERSION is set when tools/install_sync.py copies viewer.js;
+// build_stamp.js carries the VERSION build_viewer.py saw. Differ -> this tab runs an old viewer.js: ask for F5.
+var CODE_VERSION='dev';
+function updVer(){var lb=$('vlabel');if(!lb)return;var dv=window.__VIEWER_VERSION||'',bt=window.__BUILD_TIME||'',
+   cv=CODE_VERSION!=='dev'?CODE_VERSION:(dv||'dev'),old=CODE_VERSION!=='dev'&&dv&&dv!=='dev'&&dv!==CODE_VERSION,
+   m=/^\d{4}-(\d\d)-(\d\d)T(\d\d:\d\d)/.exec(bt);
+  lb.textContent=old?T('newVer'):(cv==='dev'?'dev':'v'+cv.split(' ')[0]);lb.classList.toggle('stale',!!old);
+  lb.title=(cv==='dev'?'dev':'v'+cv)+(old?' → v'+dv:'')+(m?' · '+T('verData')+' '+m[2]+'.'+m[1]+' '+m[3]:'');
+  lb.onclick=old?function(){location.reload()}:null}
+updVer();
 function busy(){var a=document.activeElement;return !$('lb').hidden||!!document.fullscreenElement||!!(a&&/^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName))}
 function saveState(){var b=$('msgs'),st={t:Date.now()};
   if(chat&&!$('chat').hidden){st.id=chat.id;st.name=chat.name;st.inchat=document.body.classList.contains('inchat');
@@ -593,7 +603,7 @@ function saveState(){var b=$('msgs'),st={t:Date.now()};
   try{sessionStorage.setItem('sb.refresh',JSON.stringify(st))}catch(e){}}
 function tryRefresh(){if(stale&&!busy()){saveState();location.reload()}}
 function pollStamp(){var s=document.createElement('script');s.src='build_stamp.js?t='+Date.now();
-  s.onload=s.onerror=function(){s.remove();var v=window.__BUILD_STAMP;if(v){if(STAMP0==null)STAMP0=v;else if(v!==STAMP0)stale=true}tryRefresh()};
+  s.onload=s.onerror=function(){s.remove();updVer();var v=window.__BUILD_STAMP;if(v){if(STAMP0==null)STAMP0=v;else if(v!==STAMP0)stale=true}tryRefresh()};
   document.head.appendChild(s)}
 setInterval(pollStamp,30000);
 function restoreState(){var st=null;try{st=JSON.parse(sessionStorage.getItem('sb.refresh')||'null');sessionStorage.removeItem('sb.refresh')}catch(e){}

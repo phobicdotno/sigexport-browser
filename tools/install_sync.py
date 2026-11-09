@@ -17,6 +17,7 @@ Install does:
 Uninstall removes exactly those four things. Neither ever touches the archive itself.
 """
 import argparse
+import json
 import os
 import plistlib
 import re
@@ -214,8 +215,7 @@ def install(a):
     cfg.write_text("// LOCAL ONLY - never commit or upload. Written by tools/install_sync.py.\n"
                    "window.SYNC_CONFIG = {port: %d, token: '%s'};\n" % (a.port, token), encoding="utf-8")
     os.chmod(cfg, 0o600)
-    for f in ("index.html", "viewer.js", "viewer.css"):
-        shutil.copy2(REPO / "viewer" / f, viewer / f)
+    copy_viewer_files(viewer)
 
     # 2. helper LaunchAgent
     AGENTS.mkdir(parents=True, exist_ok=True)
@@ -277,6 +277,30 @@ def uninstall(a):
     (a.out / "viewer" / "sync_config.js").unlink(missing_ok=True)
     (a.out / "_state" / "signal_sync.applescript").unlink(missing_ok=True)
     print("Removed both LaunchAgents, %s and the token. The archive was not touched." % APP)
+
+
+VIEWER_FILES = ("index.html", "viewer.js", "viewer.css", "build_viewer.py")
+CODE_VERSION_RE = re.compile(r"var CODE_VERSION='[^']*';")
+
+
+def copy_viewer_files(viewer, repo=None):
+    """Copy the viewer code into an output viewer folder (never config.js, sync_config.js or themes):
+    viewer.js gets CODE_VERSION set to the repo VERSION and viewer/VERSION is written next to
+    build_viewer.py so local rebuilds stamp the same version."""
+    repo = Path(repo or REPO)
+    viewer = Path(viewer)
+    version = (repo / "VERSION").read_text(encoding="utf-8").strip() or "dev"
+    for f in VIEWER_FILES:
+        src = repo / "viewer" / f
+        if f == "viewer.js":
+            js = src.read_text(encoding="utf-8")
+            js = CODE_VERSION_RE.sub(lambda m: "var CODE_VERSION=%s;" % json.dumps(version).replace('"', "'"), js, count=1)
+            with open(viewer / f, "w", encoding="utf-8", newline="\n") as fh:
+                fh.write(js)
+        else:
+            shutil.copy2(src, viewer / f)
+    (viewer / "VERSION").write_text(version + "\n", encoding="utf-8")
+    return version
 
 
 def main():

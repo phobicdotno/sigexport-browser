@@ -125,11 +125,27 @@ def swap_dir(new, dst):
         shutil.rmtree(old, ignore_errors=True)
 
 
+def read_version():
+    """Repo VERSION (repo/viewer/build_viewer.py -> repo/VERSION) or viewer/VERSION written by install_sync; else 'dev'."""
+    here = Path(__file__).resolve().parent
+    for p in (here / 'VERSION', here.parent / 'VERSION'):
+        try:
+            v = p.read_text(encoding='utf-8').strip()
+        except OSError:
+            continue
+        if re.fullmatch(r'[0-9A-Za-z.()\- ]{1,40}', v):
+            return v
+    return 'dev'
+
+
 def write_stamp(out, nchats, nmsg, nmedia):
-    """Written LAST (tmp + rename): open viewer tabs poll build_stamp.js and refresh in place when it changes."""
+    """Written LAST (tmp + rename): open viewer tabs poll build_stamp.js and refresh in place when it changes.
+    Also carries the viewer version and build time for the label under the avatar."""
     tmp = os.path.join(str(out), 'build_stamp.js.tmp')
+    now = datetime.now().isoformat(timespec='seconds')
     with open(tmp, 'w', encoding='utf-8', newline='\n') as f:
-        f.write("window.__BUILD_STAMP='%s-%d-%d-%d';\n" % (datetime.now().isoformat(timespec='seconds'), nchats, nmsg, nmedia))
+        f.write("window.__BUILD_STAMP='%s-%d-%d-%d';\n" % (now, nchats, nmsg, nmedia))
+        f.write("window.__VIEWER_VERSION=%s;window.__BUILD_TIME='%s';\n" % (json.dumps(read_version()), now))
     os.replace(tmp, os.path.join(str(out), 'build_stamp.js'))
 
 
