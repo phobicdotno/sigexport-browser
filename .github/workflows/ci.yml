@@ -29,6 +29,9 @@ jobs:
           python-version: ${{ matrix.python }}
       - name: Test dependency (AES for the prune fixtures)
         run: python -m pip install --disable-pip-version-check pycryptodome
+      - name: Test dependency (rclone, so the real copy/check --files-from test runs)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq rclone && rclone version | head -1
       - name: Viewer build tests (synthetic fixture)
         run: python -m unittest discover -s tests -t . -p 'test_*.py' -v
       - name: Pipeline tests

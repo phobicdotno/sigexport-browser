@@ -1,5 +1,6 @@
 import json
 import os
+import shutil
 import sys
 import tempfile
 import unittest
@@ -190,7 +191,8 @@ class SyncTest(unittest.TestCase):
         bad.write_text("_work/**\n# viewer/sync_config.js\n", encoding="utf-8")
         with self.assertRaises(SystemExit):
             S.load_upload_excludes(bad)
-        # the real --upload path passes the exclude to both rclone copy and rclone check
+        # the real --upload path keeps excluded files out of the --files-from list (rclone refuses
+        # --exclude together with --files-from, so no filter flags may be passed alongside it)
         write_chat(self.exp / "A", [msg("2026-01-01T10:00:00.000000", "A", "one"),
                                     msg("2026-01-02T10:00:00.000000", "A", "new")])
         calls, real = [], S.subprocess.run
@@ -213,7 +215,16 @@ class SyncTest(unittest.TestCase):
                 os.environ["REMOTE"] = old_env
         self.assertEqual([c[1] for c in calls], ["copy", "check"])
         for c in calls:
-            self.assertIn("viewer/sync_config.js", [c[i + 1] for i, x in enumerate(c) if x == "--exclude"])
+            self.assert_no_filter_with_files_from(c)
+            lst = Path(c[c.index("--files-from") + 1]).read_text(encoding="utf-8").splitlines()
+            self.assertNotIn("viewer/sync_config.js", lst)
+
+    def assert_no_filter_with_files_from(self, cmd):
+        self.assertIn("--files-from", cmd)
+        bad = [x for x in cmd if x.split("=")[0] in (
+            "--exclude", "--exclude-from", "--include", "--include-from", "--filter", "--filter-from",
+            "--exclude-if-present")]
+        self.assertEqual(bad, [], "rclone rejects filter flags combined with --files-from")
 
     # ------------------------------------------------------------ incremental export / upload
     def test_watermark_selection(self):
@@ -306,6 +317,8 @@ class SyncTest(unittest.TestCase):
             S.subprocess.run = real
             os.environ.pop("REMOTE", None)
         self.assertEqual([c[1] for c in calls], ["copy", "check"])
+        for c in calls:
+            self.assert_no_filter_with_files_from(c)
         self.assertIn("--no-traverse", calls[0])
         self.assertIn("--one-way", calls[1])
         files = lists[0]
@@ -317,6 +330,37 @@ class SyncTest(unittest.TestCase):
         log = (self.out / "_state" / "sync.log").read_text(encoding="utf-8")
         self.assertRegex(log, r"step=merge secs=\d+\.\d")
         self.assertRegex(log, r"step=upload secs=\d+\.\d")
+
+    def test_upload_files_refuses_excluded_path(self):
+        run = S.Run.__new__(S.Run)
+        run.out, run.state = self.out, self.out / "_state"
+        called, real = [], S.subprocess.run
+        S.subprocess.run = lambda cmd, *a, **kw: called.append(cmd)
+        try:
+            with self.assertRaises(SystemExit):
+                S.upload_files(run, "dummy:remote", ["001_A/A/data.json", "viewer/sync_config.js"],
+                               S.load_upload_excludes())
+        finally:
+            S.subprocess.run = real
+        self.assertEqual(called, [])
+
+    @unittest.skipUnless(shutil.which("rclone"), "rclone not installed")
+    def test_upload_files_real_rclone_local_remote(self):
+        """Runs the actual rclone CLI (copy + check with --files-from) against a local dir remote,
+        so a flag combination rclone rejects fails here instead of in the nightly sync."""
+        (self.out / "viewer").mkdir()
+        (self.out / "viewer" / "sync_config.js").write_text("token", encoding="utf-8")
+        (self.out / "viewer" / "index.html").write_text("<html>", encoding="utf-8")
+        dest = self.root / "remote"
+        dest.mkdir()
+        run = S.Run.__new__(S.Run)
+        run.out, run.state = self.out, self.out / "_state"
+        files = ["001_A/A/data.json", "Media/Pictures/x.jpg", "viewer/index.html"]
+        rc, crc = S.upload_files(run, str(dest), files, S.load_upload_excludes())
+        self.assertEqual((rc, crc), (0, 0), (self.out / "_state" / "upload_check.log").read_text(errors="replace"))
+        got = sorted(str(p.relative_to(dest)).replace(os.sep, "/") for p in dest.rglob("*") if p.is_file())
+        self.assertEqual(got, sorted(files))
+        self.assertFalse((dest / "viewer" / "sync_config.js").exists())
 
 
 if __name__ == "__main__":

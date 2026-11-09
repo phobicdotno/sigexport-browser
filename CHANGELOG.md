@@ -1,5 +1,8 @@
 # Changelog
 
+## v0.1.49 (build 27) — 2026-11-09
+- Fix incremental upload failing every run (rc=1, prune skipped): rclone rejects `--exclude` together with `--files-from` ("the usage of --files-from overrides all other filters"), so `rclone copy/check --files-from` no longer gets the exclude args; the list is already built from the exclude-filtered diff and `upload_files` now refuses (fail closed, no rclone call) if any listed path matches tools/upload_excludes.txt; tests assert no filter flags beside `--files-from` and run real rclone copy + check against a local dir remote (CI installs rclone on Linux)
+
 ## v0.1.48 (build 26) — 2026-11-09
 - Fast sync: incremental export (per-conversation DB fingerprint count:max(received_at):max(rowid) read from the same in-process cursor, stored in `_state/sync_watermarks.tsv`; only changed, new and deferred conversations go through sigexport via the id-based fetch_data filter, failed chats lose their watermark so they are retried; full export with `--full`, without watermarks, or weekly — edits/reactions are only picked up there and merge-only never rewrites existing lines anyway); incremental upload (stat diff of the archive before/after the run, viewer outputs by md5, minus tools/upload_excludes.txt; `rclone copy/check --one-way --files-from --no-traverse`; a failed upload's list is carried to the next run); whole-archive `rclone check` only with `--full-check` (03:00 job, installer default); `step=X secs=Y` per step in sync.log; viewer rebuild stays full (~40 s, global chat numbering); prune fetches remote md5s only for the candidates' archive files and compares paths NFC-normalised (macOS NFD vs Jottacloud NFC, æøå names were never pruned); tests
 

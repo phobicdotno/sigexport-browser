@@ -601,19 +601,28 @@ def changed_files(before: dict, after: dict) -> list[str]:
     return sorted(out)
 
 
-def upload_files(run: Run, remote: str, files: list[str], ex: list[str]) -> tuple[int, int]:
-    """rclone copy + check --one-way limited to files (relative paths, --no-traverse)."""
+def upload_files(run: Run, remote: str, files: list[str], excludes: list[str]) -> tuple[int, int]:
+    """rclone copy + check --one-way limited to files (relative paths, --no-traverse).
+
+    rclone refuses --exclude/--filter together with --files-from ("the usage of --files-from
+    overrides all other filters", rc=1), so the excludes are enforced here in Python instead:
+    the list comes from the exclude-filtered tree diff, and any listed path that still matches
+    tools/upload_excludes.txt aborts the upload (fail closed, sync_config.js never leaves the Mac)."""
     state = run.state
+    is_excluded = excluder(excludes)
+    bad = [f for f in files if is_excluded(f)]
+    if bad:
+        raise SystemExit(f"upload list has {len(bad)} excluded path(s), refusing to upload")
     lst = state.parent / "_work" / "upload_files.txt"
     lst.parent.mkdir(parents=True, exist_ok=True)
     lst.write_text("".join(f + "\n" for f in files), encoding="utf-8")
     if not files:
         return 0, 0
-    rc = subprocess.run(["rclone", "copy", str(run.out), remote, "--files-from", str(lst), "--no-traverse", *ex,
+    rc = subprocess.run(["rclone", "copy", str(run.out), remote, "--files-from", str(lst), "--no-traverse",
                          "--transfers", "4", "--checkers", "8", "--retries", "5",
                          "--log-file", str(state / "upload.log"), "--log-level", "INFO"]).returncode
     with open(state / "upload_check.log", "w") as f:
-        crc = subprocess.run(["rclone", "check", str(run.out), remote, "--one-way", "--files-from", str(lst), *ex,
+        crc = subprocess.run(["rclone", "check", str(run.out), remote, "--one-way", "--files-from", str(lst),
                               "--checkers", "8"], stdout=f, stderr=subprocess.STDOUT).returncode
     return rc, crc
 
@@ -730,7 +739,7 @@ def sync(run: Run, tmp: Path, upload: bool, remote: str | None) -> int:
         pend = out / "_work" / "upload_pending.txt"  # files a failed earlier upload still owes
         owed = set(D.rd(str(pend)).splitlines()) if pend.is_file() else set()
         files = sorted(set(changed_files(tree_before, after)) | (owed & set(after)))
-        rc, crc = upload_files(run, remote, files, ex)
+        rc, crc = upload_files(run, remote, files, excludes)
         run.log(f"upload files={len(files)} owed={len(owed)} rc={rc} check rc={crc}")
         if rc or crc:
             pend.parent.mkdir(parents=True, exist_ok=True)
