@@ -233,3 +233,15 @@ mark.cur{background:var(--hitcur)}
 #syncbtn.spin svg{animation:syncspin 1.2s linear infinite}
 @keyframes syncspin{to{transform:rotate(360deg)}}
 @media (prefers-reduced-motion:reduce){#syncbtn.spin svg{animation:none}}
+.fdl{margin-left:auto;flex:none;opacity:.8}.fdl:hover{opacity:1}.fdl svg{width:18px;height:18px}
+#dlall{display:inline-flex;align-items:center;gap:4px;margin-left:auto;cursor:pointer}#dlall svg{width:14px;height:14px}
+.toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);z-index:1000;max-width:min(92vw,520px);background:var(--pill);color:var(--text);padding:10px 16px;border-radius:14px;font:13px var(--font);box-shadow:0 4px 20px rgba(0,0,0,.35);text-align:center}
+.syncrow{display:flex;align-items:center;gap:8px}.syncrow .syncmsg{flex:1;min-width:0}
+.synclink{flex:none;background:none;border:0;padding:0;color:var(--accent);font:inherit;font-size:12.5px;text-decoration:underline;cursor:pointer}
+.logp{position:fixed;inset:0;z-index:200;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;padding:16px}
+.logp[hidden]{display:none}
+.logbox{background:var(--bar);color:var(--text);border-radius:14px;width:min(900px,100%);max-height:85vh;display:flex;flex-direction:column;box-shadow:0 8px 40px rgba(0,0,0,.5)}
+.logbox header{display:flex;align-items:center;gap:10px;padding:10px 12px;border-bottom:1px solid var(--line)}
+.logbox header b{font-weight:500}.logbox header #logst{flex:1;color:var(--sub);font-size:12.5px}
+#logpre{margin:0;padding:10px 14px;overflow:auto;font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;white-space:pre-wrap;word-break:break-all;flex:1;min-height:120px}
+#logpre .bad{color:#ff6b6b}#logpre .good{color:#4cd27a}

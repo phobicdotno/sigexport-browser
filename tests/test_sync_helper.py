@@ -95,6 +95,61 @@ class SyncHelperTest(unittest.TestCase):
         self.assertEqual(code, 500)
         self.assertIn("not found", body["error"])
 
+    def _media_fixture(self):
+        (self.out / "Media" / "Pictures").mkdir(parents=True)
+        (self.out / "Media" / "Pictures" / "a1.jpg").write_bytes(b"JPEGDATA")
+        (self.out / "Media" / "Pictures" / "a2.mp4").write_bytes(b"MP4DATA")
+        (self.out / "secret.txt").write_text("nope")
+        (self.out / "viewer" / "data").mkdir()
+        msgs = [{"a": [{"path": "../Media/Pictures/a1.jpg", "type": "image", "name": "Sun æ.jpg", "ok": True},
+                       {"path": "../Media/Pictures/a2.mp4", "type": "video", "name": "Sun æ.jpg", "ok": True},
+                       {"path": "../secret.txt", "type": "image", "name": "x.jpg", "ok": True},
+                       {"path": "../Media/../../etc/hosts", "type": "image", "name": "h.jpg", "ok": True},
+                       {"path": "../Media/Pictures/gone.jpg", "type": "image", "name": "g.jpg", "ok": False}]}]
+        chat = {"id": 7, "dir": "", "name": "Test chat", "messages": msgs}
+        (self.out / "viewer" / "data" / "7.js").write_text(
+            "window.CHATS=window.CHATS||{};window.CHATS[7]=" + json.dumps(chat) + ";", encoding="utf-8")
+
+    def test_media_zip_ticket_and_traversal(self):
+        import io
+        import zipfile
+        self._media_fixture()
+        self.assertEqual(self.call("POST", "/zip-ticket?chat=7", token=None)[0], 401)
+        self.assertEqual(self.call("POST", "/zip-ticket?chat=../7")[0], 404)
+        code, _, body = self.call("POST", "/zip-ticket?chat=7", origin="null")
+        self.assertEqual((code, body["files"]), (200, 2))
+        bad = self.call("GET", "/media.zip?chat=7&ticket=wrong", token=None)
+        self.assertEqual(bad[0], 401)
+        url = "http://127.0.0.1:%d/media.zip?chat=7&ticket=%s" % (self.port, body["ticket"])
+        with urllib.request.urlopen(url, timeout=10) as r:
+            self.assertIn("attachment", r.headers["Content-Disposition"])
+            data = r.read()
+        z = zipfile.ZipFile(io.BytesIO(data))
+        self.assertEqual(sorted(z.namelist()), ["Sun æ (2).jpg", "Sun æ.jpg"])
+        self.assertEqual(z.read("Sun æ.jpg"), b"JPEGDATA")
+        with self.assertRaises(urllib.error.HTTPError):  # single use
+            urllib.request.urlopen(url, timeout=10)
+
+    def test_log_tail_current_run_and_failed_count(self):
+        st = self.out / "_state"
+        st.mkdir()
+        (st / "sync.log").write_text("\n".join([
+            "t step=disk progress=0.02", "t chat NNN=001 failed (RuntimeError); restoring backup",
+            "t end state=failed added=1 media=0 chats=0",
+            "t step=disk progress=0.02", "t chat NNN=002 new=0 add=3 media=0",
+            "t chat NNN=003 failed (RuntimeError); restoring backup",
+            "t chat NNN=004 failed (RuntimeError); restoring backup", "t upload rc=0 check rc=0",
+            "t end state=failed added=3 media=0 chats=0"]) + "\n")
+        (st / "sync_status.json").write_text(json.dumps({"state": "failed", "message": "some chats failed"}))
+        code, _, body = self.call("GET", "/log?lines=5000", origin="null")
+        self.assertEqual(code, 200)
+        self.assertEqual(body["lines"][0], "t step=disk progress=0.02")
+        self.assertEqual((len(body["lines"]), body["failed_chats"]), (6, 2))
+        self.assertEqual(len(self.call("GET", "/log?lines=2")[2]["lines"]), 2)
+        self.assertEqual(self.call("GET", "/log", token=None)[0], 401)
+        self.assertEqual(self.call("GET", "/status")[2]["failed_chats"], 2)
+        self.assertLessEqual(sync_helper.LOG_MAX, 500)
+
     def test_print_status_stale(self):
         st = self.out / "_state"
         st.mkdir()

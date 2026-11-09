@@ -5,6 +5,12 @@ Endpoints (127.0.0.1 only):
   POST /sync    start pipeline/sync.py detached -> 202 {"started": true}
                 already running                 -> 409 {"busy": true}
   GET  /status  contents of OUT/_state/sync_status.json ({"state": "idle"} if none yet)
+  GET  /log?lines=N   tail (max 500 lines) of OUT/_state/sync.log for the current/last run
+                      (from the last "step=disk" line on) -> {"lines": [...], "failed_chats": n}
+  POST /zip-ticket?chat=N   -> {"ticket": "...", "files": n}: short-lived (60 s), single-use ticket
+  GET  /media.zip?chat=N&ticket=T   streams a zip of chat N's photos/videos (the ticket replaces the
+                      token header so the browser can download it natively). Only files referenced in
+                      OUT/viewer/data/N.js, resolved inside OUT/Media or that chat's own folder.
   OPTIONS *     CORS preflight
 
 Security:
@@ -26,6 +32,9 @@ import hmac
 import json
 import os
 import re
+import secrets
+import zipfile
+from urllib.parse import parse_qs, quote, unquote, urlsplit
 import subprocess
 import sys
 import threading
@@ -57,6 +66,84 @@ def read_status(out):
         return json.loads(p.read_text(encoding="utf-8")), p.stat().st_mtime
     except (OSError, ValueError):
         return {"state": "idle"}, 0.0
+
+
+LOG_MAX = 500
+FAILED_RE = re.compile(r"\bchat NNN=\d+ failed\b")
+
+
+def read_log(out, lines=200):
+    """Tail of sync.log for the current or last run: from the last 'step=disk' line on."""
+    try:
+        text = (Path(out) / "_state" / "sync.log").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return [], 0
+    all_lines = text.splitlines()
+    start = 0
+    for i in range(len(all_lines) - 1, -1, -1):
+        if "step=disk" in all_lines[i]:
+            start = i
+            break
+    run = all_lines[start:]
+    failed = sum(1 for ln in run if FAILED_RE.search(ln))
+    n = max(1, min(LOG_MAX, int(lines)))
+    return run[-n:], failed
+
+
+def chat_media(out, chat_id):
+    """[(abs_path, arcname)] of chat chat_id's ok photos/videos, only inside OUT/Media or the chat's folder."""
+    if not re.fullmatch(r"\d{1,6}", str(chat_id)):
+        return None
+    root = Path(out).resolve()
+    viewer = root / "viewer"
+    try:
+        js = (viewer / "data" / ("%d.js" % int(chat_id))).read_text(encoding="utf-8")
+        chat = json.loads(js[js.index("]=") + 2:].rstrip().rstrip(";"))
+    except (OSError, ValueError):
+        return None
+    roots = [(root / "Media").resolve()]
+    d = chat.get("dir") or ""
+    if d:
+        cd = (root / d.split("/")[0]).resolve()
+        if cd != root and cd.is_relative_to(root):
+            roots.append(cd)
+    files, seen, names = [], set(), set()
+    for m in chat.get("messages", []):
+        for a in m.get("a", []):
+            p = a.get("path") or ""
+            if a.get("type") not in ("image", "video") or not a.get("ok") or not p or ":" in p.split("/")[0]:
+                continue
+            f = (viewer / unquote(p.split("#")[0].split("?")[0])).resolve()
+            if f in seen or not any(f.is_relative_to(r) for r in roots) or not f.is_file():
+                continue
+            seen.add(f)
+            nm = re.sub(r'[\\/:*?"<>|\x00-\x1f]+', "_", a.get("name") or f.name).lstrip(".") or f.name
+            base, ext = os.path.splitext(nm)
+            k, cand = 1, nm
+            while cand.lower() in names:
+                k += 1
+                cand = "%s (%d)%s" % (base, k, ext)
+            names.add(cand.lower())
+            files.append((f, cand))
+    return files, chat.get("name") or ("chat %s" % chat_id)
+
+
+class Tickets:
+    def __init__(self, ttl=60):
+        self.ttl, self.t, self.lock = ttl, {}, threading.Lock()
+
+    def issue(self, chat_id):
+        tk = secrets.token_urlsafe(24)
+        with self.lock:
+            now = time.time()
+            self.t = {k: v for k, v in self.t.items() if v[1] > now}
+            self.t[tk] = (str(chat_id), now + self.ttl)
+        return tk
+
+    def take(self, tk, chat_id):
+        with self.lock:
+            v = self.t.pop(tk or "", None)
+        return v is not None and v[0] == str(chat_id) and v[1] > time.time()
 
 
 def lock_held(out):
@@ -121,6 +208,7 @@ class Runner:
 
 
 def make_handler(out, port, runner):
+    tickets = Tickets()
     own = {"http://127.0.0.1:%d" % port, "http://localhost:%d" % port}
     hosts = {"127.0.0.1:%d" % port, "localhost:%d" % port}
 
@@ -147,13 +235,15 @@ def make_handler(out, port, runner):
             self.end_headers()
             self.wfile.write(body)
 
-        def _guard(self):
+        def _guard(self, token=True):
             if self.headers.get("Host") not in hosts:
                 self._send(403, {"error": "bad host"})
                 return False
             if not self._origin_ok():
                 self._send(403, {"error": "origin not allowed"})
                 return False
+            if not token:
+                return True
             tok, got = read_token(out), self.headers.get("X-Sync-Token") or ""
             if not tok or not hmac.compare_digest(tok.encode(), got.encode()):
                 self._send(401, {"error": "bad or missing token"})
@@ -176,20 +266,72 @@ def make_handler(out, port, runner):
             self.send_header("Content-Length", "0")
             self.end_headers()
 
+        def _zip(self, q):
+            cid, tk = (q.get("chat") or [""])[0], (q.get("ticket") or [""])[0]
+            if not tickets.take(tk, cid):
+                self._send(401, {"error": "bad or expired ticket"})
+                return
+            got = chat_media(out, cid)
+            if got is None:
+                self._send(404, {"error": "no such chat"})
+                return
+            files, name = got
+            fn = (re.sub(r'[\\/:*?"<>|\x00-\x1f]+', "_", name).strip() or "chat") + " - media.zip"
+            ascii_fn = re.sub(r"[^A-Za-z0-9._ -]", "_", fn)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/zip")
+            self.send_header("Content-Disposition", "attachment; filename=\"%s\"; filename*=UTF-8''%s" % (ascii_fn, quote(fn)))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.close_connection = True
+            try:
+                with zipfile.ZipFile(self.wfile, "w", zipfile.ZIP_STORED, allowZip64=True) as z:
+                    for f, arc in files:
+                        z.write(f, arc)
+            except (OSError, ValueError):
+                pass  # client went away
+
         def do_GET(self):
+            u = urlsplit(self.path)
+            q = parse_qs(u.query)
+            if u.path == "/media.zip":
+                if self._guard(token=False):
+                    self._zip(q)
+                return
             if not self._guard():
                 return
-            if self.path.split("?")[0] == "/status":
-                self._send(200, read_status(out)[0])
+            if u.path == "/status":
+                st = read_status(out)[0]
+                if st.get("state") == "failed" and "failed_chats" not in st:
+                    st["failed_chats"] = read_log(out, 1)[1]
+                self._send(200, st)
+            elif u.path == "/log":
+                try:
+                    n = int((q.get("lines") or ["200"])[0])
+                except ValueError:
+                    n = 200
+                lines, failed = read_log(out, n)
+                self._send(200, {"lines": lines, "failed_chats": failed, "state": read_status(out)[0].get("state", "idle")})
             else:
                 self._send(404, {"error": "not found"})
 
         def do_POST(self):
             if not self._guard():
                 return
-            if self.path.split("?")[0] == "/sync":
+            u = urlsplit(self.path)
+            if u.path == "/sync":
                 code, obj = runner.start()
                 self._send(code, obj)
+            elif u.path == "/zip-ticket":
+                cid = (parse_qs(u.query).get("chat") or [""])[0]
+                got = chat_media(out, cid)
+                if got is None:
+                    self._send(404, {"error": "no such chat"})
+                elif not got[0]:
+                    self._send(404, {"error": "no media"})
+                else:
+                    self._send(200, {"ticket": tickets.issue(cid), "files": len(got[0])})
             else:
                 self._send(404, {"error": "not found"})
 

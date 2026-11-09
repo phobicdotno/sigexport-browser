@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.1.43 (build 21) — 2026-11-09
+- Viewer download: Download button (icon, tooltip, key D, en/nb) in the lightbox top bar and on file cards; saves the original file under its attachment name (else the stored name) via <a href download target=_blank>; on file:// Chrome ignores download= (opaque origins, tested headless) so the file opens in a new tab with a one-time "⌘S / right-click → Save" hint, never navigating the viewer away
+- Media tab "Download all": with the helper, POST /zip-ticket (token) returns a 60 s single-use ticket and GET /media.zip?chat=N&ticket=T streams a zip (ZIP_STORED, original names, deduped) of that chat's photos/videos, only files listed in viewer/data/N.js and resolved inside OUT/Media or the chat's folder; without the helper over http(s): sequential downloads with a "Download N files?" confirm above 20; on file:// without helper a hint to install it
+
+## v0.1.42 (build 21) — 2026-11-09
+- Sync log in the viewer: helper GET /log?lines=N (token + Origin checks, max 500) returns the current/last run of _state/sync.log from the last step=disk line; /status adds failed_chats (parsed from the log) when the engine does not write it; status bar "Show log"/"Vis logg" opens a monospace panel (copy button, refresh every 2 s while running, failed lines red, rc=0/state=done green); friendlier failure text "N chats failed – nothing was lost, they were rolled back"
+
 ## v0.1.41 (build 20) — 2026-11-09
 - Sync link check fix: linkcheck() now returns the set of broken (data.json, ref) targets and apply fails only on refs the merge newly broke (set taken before apply_chat); chats with pre-existing sigexport-missing attachments no longer fail and roll back; test for a chat with a pre-existing broken ref merging fine
 

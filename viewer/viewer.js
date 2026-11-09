@@ -14,7 +14,10 @@ var I18N={
   deleted:'Deleted message',call:'Call',missed:'Missed call',unknownDate:'Unknown date',older:'Scroll up for older messages ({n})',
   noHits:'0 matches',noMedia:'No photos or videos in this chat.',prevHit:'Previous match',nextHit:'Next match',
   zoom:'Zoom',smaller:'Smaller',larger:'Larger',close:'Close (Esc)',fullscreen:'Fullscreen (F)',prev:'Previous',next:'Next',gsearch:'Search all chats',home:'Home',none:'No matches',hitsN:'{n} matches',inChats:'in {n} chats',from:'From',to:'To',sender:'Sender',chatF:'Chat',all:'All',images:'Photos',video:'Video',audio:'Audio',files:'Files',links:'Links',backRes:'Back to results',newest:'Newest first',oldest:'Oldest first',relevance:'Relevance',searching:'Searching…',newer:'Scroll down for newer messages ({n})',
-  sync:'Sync new messages',syncStarting:'Starting sync…',syncRun:'Syncing: {step} · {p} %',syncDone:'+{n} messages, +{m} media',syncDoneChats:'+{n} messages, +{m} media, +{c} chats',syncBusy:'A sync is already running',syncFail:'Sync failed: {msg}',syncNoHelper:'Sync helper not running. Run tools/install_sync.py again.',syncAuth:'Sync helper rejected the token. Run tools/install_sync.py again.'},
+  sync:'Sync new messages',syncStarting:'Starting sync…',syncRun:'Syncing: {step} · {p} %',syncDone:'+{n} messages, +{m} media',syncDoneChats:'+{n} messages, +{m} media, +{c} chats',syncBusy:'A sync is already running',syncFail:'Sync failed: {msg}',syncNoHelper:'Sync helper not running. Run tools/install_sync.py again.',syncAuth:'Sync helper rejected the token. Run tools/install_sync.py again.',
+  download:'Download (D)',dlFile:'Download',dlAll:'Download all',dlAllTip:'Download all photos and videos in this chat',dlConfirm:'Download {n} files?',
+  dlHint:'If it opened in a new tab instead: press ⌘S (Ctrl+S) or right-click → Save',dlZip:'Preparing zip of {n} files…',dlSeq:'Downloading {i} / {n}… allow multiple downloads if the browser asks',
+  dlNeedHelper:'Download all needs the local helper when the viewer is opened as a file: run tools/install_sync.py, then try again.',showLog:'Show log',logTitle:'Sync log',copy:'Copy',copied:'Copied',syncFailOne:'1 chat failed – nothing was lost, it was rolled back',syncFailN:'{n} chats failed – nothing was lost, they were rolled back'},
  nb:{locale:'nb-NO',search:'Søk',searchChat:'Søk i samtalen',back:'Tilbake',media:'Media',messages:'Meldinger',
   pick:'Velg en samtale',pickHint:'Ingen samtaler? Kjør build_viewer.py på nytt etter flere eksporter.',readonly:'Arkiv – skrivebeskyttet',
   today:'I dag',yesterday:'I går',you:'Deg',youSubj:'Du',unavailable:'Media utilgjengelig',audioUnavailable:'Lyd utilgjengelig',
@@ -23,7 +26,10 @@ var I18N={
   deleted:'Slettet melding',call:'Anrop',missed:'Tapt anrop',unknownDate:'Ukjent dato',older:'Rull opp for eldre meldinger ({n})',
   noHits:'0 treff',noMedia:'Ingen bilder eller videoer i denne samtalen.',prevHit:'Forrige treff',nextHit:'Neste treff',
   zoom:'Zoom',smaller:'Mindre',larger:'Større',close:'Lukk (Esc)',fullscreen:'Fullskjerm (F)',prev:'Forrige',next:'Neste',gsearch:'Søk i alle samtaler',home:'Hjem',none:'Ingen treff',hitsN:'{n} treff',inChats:'i {n} samtaler',from:'Fra',to:'Til',sender:'Avsender',chatF:'Samtale',all:'Alle',images:'Bilder',video:'Video',audio:'Lyd',files:'Filer',links:'Lenker',backRes:'Tilbake til resultater',newest:'Nyeste først',oldest:'Eldste først',relevance:'Relevans',searching:'Søker…',newer:'Rull ned for nyere meldinger ({n})',
-  sync:'Synkroniser nye meldinger',syncStarting:'Starter synkronisering…',syncRun:'Synkroniserer: {step} · {p} %',syncDone:'+{n} meldinger, +{m} media',syncDoneChats:'+{n} meldinger, +{m} media, +{c} samtaler',syncBusy:'En synkronisering kjører allerede',syncFail:'Synkronisering feilet: {msg}',syncNoHelper:'Synk-hjelperen kjører ikke. Kjør tools/install_sync.py på nytt.',syncAuth:'Synk-hjelperen avviste nøkkelen. Kjør tools/install_sync.py på nytt.'}
+  sync:'Synkroniser nye meldinger',syncStarting:'Starter synkronisering…',syncRun:'Synkroniserer: {step} · {p} %',syncDone:'+{n} meldinger, +{m} media',syncDoneChats:'+{n} meldinger, +{m} media, +{c} samtaler',syncBusy:'En synkronisering kjører allerede',syncFail:'Synkronisering feilet: {msg}',syncNoHelper:'Synk-hjelperen kjører ikke. Kjør tools/install_sync.py på nytt.',syncAuth:'Synk-hjelperen avviste nøkkelen. Kjør tools/install_sync.py på nytt.',
+  download:'Last ned (D)',dlFile:'Last ned',dlAll:'Last ned alle',dlAllTip:'Last ned alle bilder og videoer i samtalen',dlConfirm:'Laste ned {n} filer?',
+  dlHint:'Åpnet den seg i en ny fane i stedet? Trykk ⌘S (Ctrl+S) eller høyreklikk → Lagre',dlZip:'Lager zip med {n} filer…',dlSeq:'Laster ned {i} / {n}… tillat flere nedlastinger hvis nettleseren spør',
+  dlNeedHelper:'«Last ned alle» trenger den lokale hjelperen når viewer åpnes som fil: kjør tools/install_sync.py og prøv igjen.',showLog:'Vis logg',logTitle:'Synkroniseringslogg',copy:'Kopier',copied:'Kopiert',syncFailOne:'1 samtale feilet – ingenting gikk tapt, den ble satt tilbake',syncFailN:'{n} samtaler feilet – ingenting gikk tapt, de ble satt tilbake'}
 };
 var LANG=I18N[CFG.lang]?CFG.lang:'en',L=I18N[LANG];
 function T(k,v){var s=L[k]!=null?L[k]:(I18N.en[k]!=null?I18N.en[k]:k);if(v)Object.keys(v).forEach(function(x){s=s.split('{'+x+'}').join(v[x])});return s}
@@ -171,7 +177,10 @@ function buildMsg(i,prev){
   other.forEach(function(a){
     if(a.type==='audio'&&a.ok){var d=el('div','audio'),au=document.createElement('audio');au.controls=true;au.preload='none';au.src=a.path;au.onerror=function(){d.textContent=T('audioUnavailable')};d.appendChild(au);b.appendChild(d)}
     else{var c=el(a.ok?'a':'div','file');if(a.ok){c.href=a.path;c.target='_blank'}c.appendChild(el('span',null,a.ok?'📄':'⚠'));
-      var t=el('div');t.appendChild(el('b',null,a.name||'file'));t.appendChild(el('small',null,a.ok?szs(a.size):T('unavailable')));c.appendChild(t);b.appendChild(c)}});
+      var t=el('div');t.appendChild(el('b',null,a.name||'file'));t.appendChild(el('small',null,a.ok?szs(a.size):T('unavailable')));c.appendChild(t);
+      if(a.ok){var db=el('button','ib sm fdl');db.title=T('dlFile');db.setAttribute('aria-label',db.title);db.appendChild(icon('i-dl'));
+        db.onclick=function(ev){ev.preventDefault();ev.stopPropagation();download(a)};c.appendChild(db)}
+      b.appendChild(c)}});
   var mt=el('span','meta',hm(m.t));if(m.o)mt.appendChild(icon('i-read'));
   if(m.b){var tx=el('div','m');addText(tx,m.b);tx.appendChild(mt);b.appendChild(tx)}else b.appendChild(mt);
   col.appendChild(b);
@@ -316,10 +325,45 @@ $('lb').addEventListener('touchend',function(e){if(tx0==null)return;var t=e.chan
   if(Math.abs(dx)>50&&Math.abs(dx)>Math.abs(dy)*1.5)nav(dx<0?1:-1);else if(dy>120&&Math.abs(dy)>Math.abs(dx)*2)closeLB()},{passive:true});$('lbbg').onclick=closeLB;$('lbstage').onclick=function(e){if(e.target===this)closeLB()};
 $('lbprev').onclick=function(){nav(-1)};$('lbnext').onclick=function(){nav(1)};
 $('lbfs').onclick=function(){if(document.fullscreenElement)document.exitFullscreen();else $('lb').requestFullscreen&&$('lb').requestFullscreen()};
+$('lbdl').onclick=function(){if(cur>=0&&media[cur])download(media[cur].a)};
 document.addEventListener('keydown',function(e){
   if($('lb').hidden)return;
+  if((e.key==='d'||e.key==='D')&&!e.metaKey&&!e.ctrlKey&&!e.altKey){e.preventDefault();$('lbdl').onclick();return}
   if(e.key==='Escape')closeLB();else if(e.key==='ArrowLeft')nav(-1);else if(e.key==='ArrowRight')nav(1);
   else if(e.key==='f'||e.key==='F')$('lbfs').onclick();});
+
+// ---- download: original file, friendly name. <a href download target=_blank>: over http(s) the browser saves
+// it under the given name. On file:// the page and the file are opaque origins, so Chrome (tested headless)
+// ignores download= and would navigate the viewer away; target=_blank makes it open in a new tab instead and
+// a one-time "⌘S / right-click -> Save" hint is shown. fetch/XHR/canvas cannot read file:// either.
+var IS_FILE=location.protocol==='file:',UA=navigator.userAgent,
+ IS_SAFARI=/Safari\//.test(UA)&&!/(Chrome|Chromium|CriOS|Edg|OPR|Firefox|FxiOS)\//.test(UA),hinted=false,toastT=null;
+function toast(msg,ms){var t=$('toast');clearTimeout(toastT);t.textContent=msg;t.hidden=false;if(ms!==0)toastT=setTimeout(function(){t.hidden=true},ms||6000)}
+function dlName(a){var n=a.name||'';if(!n){n=(a.path||'').split('#')[0].split('?')[0].split('/').pop();try{n=decodeURIComponent(n)}catch(e){}}
+  return n.replace(/[\\\/:*?"<>|\x00-\x1f]+/g,'_').replace(/^\.+/,'')||'file'}
+function download(a,quiet){if(!a||!a.ok||!a.path)return;
+  var l=document.createElement('a');l.href=a.path;l.download=dlName(a);l.target='_blank';l.rel='noopener';l.hidden=true;
+  document.body.appendChild(l);l.click();setTimeout(function(){l.remove()},0);
+  if(IS_FILE&&!hinted&&!quiet){hinted=true;toast(T('dlHint'),9000)}}
+window.__download=download;window.__dlName=dlName;
+function downloadAll(){
+  var items=media.filter(function(x){return x.a.ok&&x.a.path}).map(function(x){return x.a});if(!items.length)return;
+  var n=items.length,SC=window.SYNC_CONFIG;
+  function seq(){if(IS_FILE)return toast(T('dlNeedHelper'),12000); // would open N tabs, popup-blocked after the first
+    if(n>20&&!confirm(T('dlConfirm',{n:n})))return;var i=0;
+    (function next(){if(i>=n){toast(T('dlSeq',{i:n,n:n}),3000);return}toast(T('dlSeq',{i:i+1,n:n}),0);download(items[i++],true);setTimeout(next,400)})()}
+  if(!(SC&&SC.token&&window.fetch&&chat))return seq();
+  // helper (tools/sync_helper.py) streams one zip: get a short-lived single-use ticket, then let the
+  // browser download the zip natively (streams to disk, works from file://)
+  var base='http://127.0.0.1:'+(+SC.port||8765),id=chat.id;
+  fetch(base+'/zip-ticket?chat='+encodeURIComponent(id),{method:'POST',headers:{'X-Sync-Token':SC.token},cache:'no-store'})
+   .then(function(r){if(r.status!==200)throw new Error(r.status);return r.json()})
+   .then(function(j){if(!j.ticket)throw new Error('no ticket');toast(T('dlZip',{n:j.files||n}),5000);
+     var l=document.createElement('a');l.href=base+'/media.zip?chat='+encodeURIComponent(id)+'&ticket='+encodeURIComponent(j.ticket);
+     l.hidden=true;document.body.appendChild(l);l.click();setTimeout(function(){l.remove()},0)})
+   .catch(function(){seq()});
+}
+$('dlall').onclick=downloadAll;
 
 renderList();
 
@@ -464,7 +508,7 @@ window.__openChat=openChat;window.__search=function(v){tools(true,true);$('searc
 (function(){
   var SC=window.SYNC_CONFIG;if(!SC||!SC.token||!window.fetch)return;
   var base='http://127.0.0.1:'+(+SC.port||8765),btn=$('syncbtn'),bar=$('syncbar'),timer=null,since=0,seenRun=false,hideT=null;
-  btn.hidden=false;
+  btn.hidden=false;$('synclog').hidden=false;
   function req(m,p){return fetch(base+p,{method:m,headers:{'X-Sync-Token':SC.token},cache:'no-store'})
     .then(function(r){return r.json().catch(function(){return {}}).then(function(j){return {code:r.status,j:j}})})}
   function show(cls,msg,p){clearTimeout(hideT);bar.hidden=false;bar.className='syncbar'+(cls?' '+cls:'');$('syncmsg').textContent=msg;
@@ -478,7 +522,25 @@ window.__openChat=openChat;window.__search=function(v){tools(true,true);$('searc
   function onStatus(s){
     if(s.state==='running'){seenRun=true;show('',T('syncRun',{step:s.step||'…',p:Math.round((+s.progress||0)*100)}),s.progress);return}
     if(!fresh(s))return; // previous run's result; wait for this run to report
-    if(s.state==='done')done(s);else if(s.state==='failed')fail(s.message||'?')}
+    if(s.state==='done')done(s);else if(s.state==='failed')failed(s)}
+  function failed(s){var n=+s.failed_chats||0;if(n){stop();show('err',T(n===1?'syncFailOne':'syncFailN',{n:n}))}else fail(s.message||'?')}
+  // ---- log panel: tail of sync.log for the current/last run (helper GET /log), refreshed every 2 s while running
+  var logT=null;
+  function cls(l){return /failed/i.test(l)?'bad':/rc=0|state=done/.test(l)?'good':''}
+  function loadLog(){req('GET','/log?lines=500').then(function(r){if(r.code!==200){$('logpre').textContent=r.j.error||T('syncNoHelper');return}
+    var pre=$('logpre'),atEnd=pre.scrollHeight-pre.scrollTop-pre.clientHeight<30,fr=document.createDocumentFragment();
+    (r.j.lines||[]).forEach(function(l){fr.appendChild(el('div',cls(l)||null,l))});pre.textContent='';pre.appendChild(fr);
+    $('logst').textContent=r.j.state||'';if(atEnd)pre.scrollTop=pre.scrollHeight;
+    clearTimeout(logT);if(r.j.state==='running'&&!$('logp').hidden)logT=setTimeout(loadLog,2000)},
+    function(){$('logpre').textContent=T('syncNoHelper')})}
+  function closeLog(){clearTimeout(logT);$('logp').hidden=true}
+  $('synclog').onclick=function(){$('logp').hidden=false;$('logpre').textContent='…';loadLog()};
+  $('logclose').onclick=closeLog;$('logp').onclick=function(e){if(e.target===this)closeLog()};
+  document.addEventListener('keydown',function(e){if(e.key==='Escape'&&!$('logp').hidden)closeLog()});
+  $('logcopy').onclick=function(){var t=$('logpre').innerText,b=this;
+    function ok(){b.textContent=T('copied');setTimeout(function(){b.textContent=T('copy')},1500)}
+    if(navigator.clipboard&&navigator.clipboard.writeText)navigator.clipboard.writeText(t).then(ok,legacy);else legacy();
+    function legacy(){var ta=document.createElement('textarea');ta.value=t;document.body.appendChild(ta);ta.select();try{document.execCommand('copy');ok()}catch(e){}ta.remove()}};
   function poll(){req('GET','/status').then(function(r){if(r.code!==200)return fail(r.j.error,r.code);onStatus(r.j)},function(){fail()})}
   function watch(){if(timer)return;timer=setInterval(poll,2000);poll()}
   btn.addEventListener('click',function(){
@@ -489,7 +551,7 @@ window.__openChat=openChat;window.__search=function(v){tools(true,true);$('searc
       fail(r.j.error,r.code)},function(){fail()})});
   // on load: pick up a sync started elsewhere (Dock app, 03:00 job) or a result from just before a reload
   req('GET','/status').then(function(r){if(r.code!==200)return;var s=r.j,f=Date.parse(s.finished||'');
-    if(s.state==='running'){seenRun=true;watch()}else if(s.state==='done'&&!isNaN(f)&&Date.now()-f<120000)done(s)},function(){});
+    if(s.state==='running'){seenRun=true;watch()}else if(!isNaN(f)&&Date.now()-f<120000){if(s.state==='done')done(s);else if(s.state==='failed')failed(s)}},function(){});
 })();
 
 // ---- auto-refresh after a rebuild: poll build_stamp.js via a <script> tag (fetch is blocked on file://).

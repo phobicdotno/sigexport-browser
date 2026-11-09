@@ -21,6 +21,7 @@
  <symbol id="i-up" viewBox="0 0 24 24"><path d="m6 15 6-6 6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
  <symbol id="i-down" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
  <symbol id="i-sync" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19.5 9A8 8 0 0 0 5.2 7.2M4.5 15a8 8 0 0 0 14.3 1.8"/><path d="M5 3v4.5h4.5M19 21v-4.5h-4.5"/></g></symbol>
+ <symbol id="i-dl" viewBox="0 0 24 24"><path d="M12 4v11m-5-5 5 5 5-5M5 20h14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
  <symbol id="i-read" viewBox="0 0 26 16"><circle cx="8" cy="8" r="7" fill="currentColor" opacity=".55"/><circle cx="17" cy="8" r="7.6" fill="currentColor"/><path d="m13.6 8.2 2.4 2.4 4.4-4.8" fill="none" stroke="var(--chk)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></symbol>
 </svg>
 <div id="app">
@@ -31,7 +32,7 @@
       <button id="syncbtn" class="ib" data-i18n-title="sync" hidden><svg><use href="#i-sync"/></svg></button>
       <button id="lsearch" class="ib" data-i18n-title="search"><svg><use href="#i-search"/></svg></button>
     </header>
-    <div id="syncbar" class="syncbar" role="status" aria-live="polite" hidden><div id="syncmsg" class="syncmsg"></div><div class="syncprog"><i id="syncfill"></i></div></div>
+    <div id="syncbar" class="syncbar" role="status" aria-live="polite" hidden><div class="syncrow"><div id="syncmsg" class="syncmsg"></div><button id="synclog" class="synclink" data-i18n="showLog" hidden></button></div><div class="syncprog"><i id="syncfill"></i></div></div>
     <div id="lfilter" class="searchrow" hidden><input id="chatfilter" data-i18n-ph="search" type="search" autocomplete="off"></div>
     <div id="gsearch" class="gsearch" hidden>
       <div class="searchrow"><input id="gq" type="search" data-i18n-ph="gsearch" autocomplete="off"></div>
@@ -71,18 +72,24 @@
         <button id="zout" class="ib sm" data-i18n-title="smaller">&minus;</button>
         <input id="zrange" type="range" min="60" max="320" step="10" value="140">
         <button id="zin" class="ib sm" data-i18n-title="larger">+</button>
+        <button id="dlall" class="pillbtn" data-i18n-title="dlAllTip"><svg><use href="#i-dl"/></svg><span data-i18n="dlAll"></span></button>
       </div>
       <div id="mediagrid" hidden></div>
       <footer class="rofoot" data-i18n="readonly"></footer>
     </section>
   </main>
 </div>
+<div id="logp" class="logp" hidden><div class="logbox" role="dialog" aria-modal="true" aria-labelledby="logt">
+  <header><b id="logt" data-i18n="logTitle"></b><span id="logst"></span><button id="logcopy" class="pillbtn" data-i18n="copy"></button><button id="logclose" class="ib sm" data-i18n-title="close"><svg><use href="#i-x"/></svg></button></header>
+  <pre id="logpre"></pre></div></div>
+<div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
 <div id="lb" hidden>
   <div id="lbbg"></div>
   <div id="lbstage"></div>
   <div id="lbtop">
     <button id="lbclose" data-i18n-title="close"><svg><use href="#i-back"/></svg></button>
     <div id="lbcap"><b></b><small></small><span class="lbr" hidden></span></div>
+    <button id="lbdl" data-i18n-title="download"><svg><use href="#i-dl"/></svg></button>
     <button id="lbfs" data-i18n-title="fullscreen"><svg><use href="#i-fs"/></svg></button>
   </div>
   <button id="lbprev" class="nav" data-i18n-title="prev"><svg><use href="#i-left"/></svg></button>
