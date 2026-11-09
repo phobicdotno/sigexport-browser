@@ -1,5 +1,8 @@
 # Changelog
 
+## v0.1.50 (build 28) — 2026-11-09
+- No-change sync in seconds: a new `precheck` step (`sync_export.py precheck`, no sigexport parsing) runs one aggregate query (count, max received_at, max rowid per conversation) against `_state/sync_watermarks.tsv`; with nothing new it ends `done` / "no changes" and skips export, merge, viewer, upload and prune (unless an earlier upload still owes files). Deferred chats are no longer re-exported every run: the watermark row now keeps the pending message ids (`msgid@sent_at`), and the chat is re-exported only once a pending attachment's file exists in `attachments.noindex`, the message is deleted, or it is past DEFER_DAYS + 1 day (then merged with `missing_kind`); old rows without the list are re-exported once. Changed chats are filtered in fetch_data's SQL (`WHERE conversationId IN (...)` via a cursor proxy), so other chats are never read or JSON-parsed (one small chat: 2.7-3.6 s -> 1.0-1.4 s export). Tests: no-change run skips export, deferred chat waits for its attachment, pending list carried over, SQL filter.
+
 ## v0.1.49 (build 27) — 2026-11-09
 - Fix incremental upload failing every run (rc=1, prune skipped): rclone rejects `--exclude` together with `--files-from` ("the usage of --files-from overrides all other filters"), so `rclone copy/check --files-from` no longer gets the exclude args; the list is already built from the exclude-filtered diff and `upload_files` now refuses (fail closed, no rclone call) if any listed path matches tools/upload_excludes.txt; tests assert no filter flags beside `--files-from` and run real rclone copy + check against a local dir remote (CI installs rclone on Linux)
 

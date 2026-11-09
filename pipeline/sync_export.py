@@ -1,14 +1,18 @@
 #!/usr/bin/env python3
 """Run sigexport 3.9.x in-process (run with sigexport's own venv python) for sync.py.
 
-  sync_export.py export SRC DEST [OUT] [--watermarks WM] [--full]
+  sync_export.py precheck SRC WM DEST
+                                   cheap no-sigexport check: one aggregate query vs the watermarks
+                                   WM plus the deferred chats' pending messages; writes
+                                   DEST/_fingerprints.tsv and DEST/_selected.tsv (empty = no changes)
+  sync_export.py export SRC DEST [OUT] [--select FILE] [--full]
                                    export into DEST, plus DEST/_cids.tsv (conversation id <TAB>
-                                   sigexport folder name) and DEST/_fingerprints.tsv (cid, count,
+                                   sigexport folder name), DEST/_fingerprints.tsv (cid, count,
                                    max received_at, max rowid per conversation, read from the same
-                                   DB cursor). With --watermarks (and not --full) only the
-                                   conversations select_cids() picks are exported (id-based, the
-                                   fetch_data filter of _work/export_by_id.py); DEST/_selected.tsv
-                                   lists them (or "*" for all)
+                                   DB cursor) and DEST/_unavail.tsv (recent messages whose
+                                   attachment file is not there yet). With --select only the cids
+                                   in FILE are exported, filtered in fetch_data's SQL;
+                                   DEST/_selected.tsv lists them (or "*" for all)
   sync_export.py conv-map SRC OUT  build/complete OUT/_state/conv_map.tsv only (no export)
   sync_export.py setup-key SRC     one-time, interactive: decrypt the SQLCipher key via
                                    sigexport (Keychain "Signal Safe Storage" prompt) and store
@@ -152,50 +156,210 @@ def fingerprints(cur) -> dict:
     return {r[0]: f"{r[1]}:{r[2]}:{r[3]}" for r in cur.fetchall()}
 
 
+DEFER_DAYS = 30           # keep equal to sync.DEFER_DAYS
+AGE_OUT_MARGIN = 86400    # re-check a deferred message only once it is safely past DEFER_DAYS
+
+
 def read_watermarks(p) -> dict:
-    """_state/sync_watermarks.tsv: cid <TAB> fingerprint <TAB> deferred (lines starting # = meta)."""
+    """_state/sync_watermarks.tsv: cid <TAB> fingerprint <TAB> deferred [<TAB> pending]
+    (lines starting # = meta). pending = comma-separated msgid@sent_at_ms of the recent messages
+    whose attachment was not available when the chat was last exported (None = column absent)."""
     wm = {}
     p = Path(p)
     if p.is_file():
         for line in p.read_text(encoding="utf-8").splitlines():
             q = line.split("\t")
-            if len(q) == 3 and not q[0].startswith("#"):
-                wm[q[0]] = (q[1], int(q[2] or 0))
+            if len(q) in (3, 4) and not q[0].startswith("#"):
+                wm[q[0]] = (q[1], int(q[2] or 0), parse_pending(q[3]) if len(q) == 4 else None)
     return wm
 
 
-def select_cids(fp: dict, wm: dict) -> set:
-    """Conversations to export: new (no watermark), changed fingerprint, or deferred > 0."""
-    return {c for c, f in fp.items() if c not in wm or wm[c][0] != f or wm[c][1] > 0}
+def parse_pending(s: str) -> list:
+    out = []
+    for item in (s or "").split(","):
+        mid, _, t = item.rpartition("@")
+        if mid:
+            try:
+                out.append((mid, int(t)))
+            except ValueError:
+                pass
+    return out
+
+
+def format_pending(items) -> str:
+    return ",".join(f"{m}@{int(t)}" for m, t in items)
+
+
+ATT_SQL = ("SELECT m.conversationId, m.id, m.sent_at, a.path FROM messages m "
+           "JOIN message_attachments a ON a.messageId = m.id "
+           "WHERE a.attachmentType = 'attachment' AND a.editHistoryIndex = -1 AND {where}")
+
+
+def _has_att_table(cur) -> bool:
+    cur.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='message_attachments'")
+    return cur.fetchone() is not None
+
+
+def unavailable(cur, src, since_ms: int, cids=None) -> dict:
+    """{cid: [(msgid, sent_at)]}: messages sent since since_ms with an attachment whose file is not
+    in SRC/attachments.noindex yet (no path, or the path's file does not exist). These are the
+    messages the merge defers. One query plus one stat per recent attachment."""
+    if not _has_att_table(cur):
+        return {}
+    root = Path(src) / "attachments.noindex"
+    cur.execute(ATT_SQL.format(where="m.sent_at >= ?"), (int(since_ms),))
+    res = {}
+    for cid, mid, sent, path in cur.fetchall():
+        if cids is not None and cid not in cids:
+            continue
+        if not path or not (root / str(path).replace("\\", "/")).is_file():
+            lst = res.setdefault(cid, [])
+            if (mid, sent) not in lst:
+                lst.append((mid, sent))
+    return res
+
+
+def pending_ready(cur, src, pending, now_ms: int) -> bool:
+    """True if a deferred chat must be re-exported: one of its pending messages now has all its
+    attachment files, was deleted, or is old enough to be added with missing_kind."""
+    if pending is None:          # watermark from before v0.1.50: no list, re-export as before
+        return True
+    if not pending:              # deferred for a reason the DB cannot show; the weekly full export retries
+        return False
+    if not _has_att_table(cur):
+        return True
+    root = Path(src) / "attachments.noindex"
+    for mid, sent in pending:
+        if now_ms - sent >= (DEFER_DAYS * 86400 + AGE_OUT_MARGIN) * 1000:
+            return True
+        cur.execute(ATT_SQL.format(where="m.id = ?"), (mid,))
+        rows = cur.fetchall()
+        if not rows or all(p and (root / str(p).replace("\\", "/")).is_file() for _c, _m, _s, p in rows):
+            return True
+    return False
+
+
+def select_cids(fp: dict, wm: dict, ready=None) -> set:
+    """Conversations to export: new (no watermark), changed fingerprint, or deferred > 0 with a
+    pending message that became resolvable (ready(cid, pending) -> bool; None = always)."""
+    sel = set()
+    for c, f in fp.items():
+        w = wm.get(c)
+        if w is None or w[0] != f:
+            sel.add(c)
+        elif w[1] > 0 and (ready is None or ready(c, w[2] if len(w) > 2 else None)):
+            sel.add(c)
+    return sel
+
+
+def open_db(src):
+    import sigexport.data as data
+    return data.get_signal_database(Path(src), password=None, key=stored_key())
+
+
+def precheck(src, wm_path, dest) -> int:
+    """No sigexport parsing: one aggregate query + the pending checks. Writes DEST/_fingerprints.tsv
+    and DEST/_selected.tsv (selected cids, empty file = nothing to export). Prints counts only."""
+    import time
+    cur = open_db(src)
+    fp = fingerprints(cur)
+    wm = read_watermarks(wm_path)
+    now_ms = int(time.time() * 1000)
+    ready_n = [0]
+
+    def ready(cid, pending):
+        r = pending_ready(cur, src, pending, now_ms)
+        ready_n[0] += int(r)
+        return r
+
+    sel = select_cids(fp, wm, ready)
+    dest = Path(dest)
+    dest.mkdir(parents=True, exist_ok=True)
+    with open(dest / "_fingerprints.tsv", "w", encoding="utf-8") as f:
+        f.write("".join(f"{c}\t{v}\n" for c, v in fp.items()))
+    with open(dest / "_selected.tsv", "w", encoding="utf-8") as f:
+        f.write("".join(f"{c}\n" for c in sorted(sel)))
+    deferred = sum(1 for w in wm.values() if w[1] > 0)
+    print(f"precheck: convos={len(fp)} selected={len(sel)} deferred_chats={deferred} "
+          f"deferred_ready={ready_n[0]}", flush=True)
+    return 0
+
+
+def read_selected(p):
+    lines = [x.strip() for x in Path(p).read_text(encoding="utf-8").splitlines() if x.strip()]
+    return None if lines == ["*"] else set(lines)
+
+
+class CidFilterCursor:
+    """Cursor proxy for sigexport's fetch_data: the messages query gets
+    'WHERE conversationId IN (...)' so only the selected chats are read and JSON-parsed."""
+
+    def __init__(self, cur, cids):
+        self._c, self._cids = cur, sorted(cids)
+
+    def execute(self, sql, *a):
+        if "FROM messages" in sql and "ORDER BY sent_at" in sql and "conversationId," in sql and self._cids:
+            qs = ",".join("?" * len(self._cids))
+            head, tail = sql.rsplit("ORDER BY sent_at", 1)
+            cond = f"conversationId IN ({qs})"
+            head = head.replace("WHERE ", f"WHERE {cond} AND ", 1) if "WHERE " in head \
+                else head.rstrip() + f"\n    WHERE {cond}\n    "
+            self._c.execute(head + "ORDER BY sent_at" + tail, tuple(self._cids))
+        else:
+            self._c.execute(sql, *a)
+        return self
+
+    def __iter__(self):
+        return iter(self._c)
+
+    def __getattr__(self, k):
+        return getattr(self._c, k)
 
 
 class NothingToExport(Exception):
     pass
 
 
-def export(src, dest, out=None, wm_path=None, full=True):
+def export(src, dest, out=None, select_path=None, full=True):
+    """Full export, or (select_path, not full) only the cids listed in select_path (written by
+    precheck). The selection is applied in fetch_data's SQL, so other chats are never parsed."""
+    import time
     import sigexport.data as data
     import sigexport.main as smain
     import sigexport.utils as utils
     mapping, captured = {}, {}
     _fix, _fetch = utils.fix_names, data.fetch_data
+    sel = None if (full or not select_path) else read_selected(select_path)
+    if sel is not None and not sel:
+        captured["selected"] = set()
 
     def fetch_record(*a, **k):
+        a = list(a)
         cur = a[1] if len(a) > 1 else k.get("c")
         fp = fingerprints(cur)
         captured["fp"] = fp
-        res = _fetch(*a, **k)
-        captured["convos"] = res[0]
-        if full or not wm_path:
-            captured["selected"] = None
-            return res
-        sel = select_cids(fp, read_watermarks(wm_path))
+        since = int((time.time() - DEFER_DAYS * 86400) * 1000)
+        captured["unavail"] = unavailable(cur, src, since, sel)
         captured["selected"] = sel
-        keep = {c: v for c, v in res[0].items() if c in sel}
-        print(f"incremental: export {len(keep)}/{len(res[0])} convos", flush=True)
-        if not keep:
-            raise NothingToExport()
-        return (keep,) + tuple(res[1:])
+        if sel is not None:
+            if not sel:
+                raise NothingToExport()
+            t0 = time.time()
+            proxy = CidFilterCursor(cur, sel)
+            if len(a) > 1:
+                a[1] = proxy
+            else:
+                k["c"] = proxy
+            res = _fetch(*a, **k)
+            keep = {c: v for c, v in res[0].items() if c in sel}
+            print(f"incremental: export {len(keep)} convos (fetch_data {time.time() - t0:.1f}s)", flush=True)
+            if not keep:
+                raise NothingToExport()
+            res = (keep,) + tuple(res[1:])
+        else:
+            res = _fetch(*a, **k)
+        captured["convos"] = res[0]
+        return res
 
     data.fetch_data = fetch_record
 
@@ -224,8 +388,11 @@ def export(src, dest, out=None, wm_path=None, full=True):
             for cid, v in (captured.get("fp") or {}).items():
                 f.write(f"{cid}\t{v}\n")
         with open(Path(dest) / "_selected.tsv", "w", encoding="utf-8") as f:
-            sel = captured.get("selected")
-            f.write("*\n" if sel is None else "".join(f"{c}\n" for c in sorted(sel)))
+            sel_ = captured.get("selected")
+            f.write("*\n" if sel_ is None else "".join(f"{c}\n" for c in sorted(sel_)))
+        with open(Path(dest) / "_unavail.tsv", "w", encoding="utf-8") as f:
+            for cid, items in sorted((captured.get("unavail") or {}).items()):
+                f.write(f"{cid}\t{format_pending(items)}\n")
         with open(Path(dest) / "_cids.tsv", "w", encoding="utf-8") as f:
             for cid, name in mapping.items():
                 if name:
@@ -242,13 +409,15 @@ if __name__ == "__main__":
     if len(sys.argv) >= 4 and sys.argv[1] == "export":
         args = sys.argv[2:]
         full = "--full" in args
-        wm = None
-        if "--watermarks" in args:
-            i = args.index("--watermarks")
-            wm = args[i + 1]
+        sel = None
+        if "--select" in args:
+            i = args.index("--select")
+            sel = args[i + 1]
             del args[i:i + 2]
         args = [x for x in args if x != "--full"]
-        sys.exit(export(args[0], args[1], args[2] if len(args) > 2 else None, wm, full or not wm))
+        sys.exit(export(args[0], args[1], args[2] if len(args) > 2 else None, sel, full or not sel))
+    if len(sys.argv) >= 5 and sys.argv[1] == "precheck":
+        sys.exit(precheck(sys.argv[2], sys.argv[3], sys.argv[4]))
     if len(sys.argv) >= 4 and sys.argv[1] == "conv-map":
         conv_map_only(sys.argv[2], sys.argv[3])
         sys.exit(0)

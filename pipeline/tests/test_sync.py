@@ -234,7 +234,90 @@ class SyncTest(unittest.TestCase):
         self.assertEqual(SE.select_cids(fp, wm), {"changed", "deferred", "new"})
         p = self.root / "wm.tsv"
         p.write_text("#last_full\t123\nsame\t5:100:9\t0\ndeferred\t3:50:4\t2\n", encoding="utf-8")
-        self.assertEqual(SE.read_watermarks(p), {"same": ("5:100:9", 0), "deferred": ("3:50:4", 2)})
+        self.assertEqual(SE.read_watermarks(p), {"same": ("5:100:9", 0, None), "deferred": ("3:50:4", 2, None)})
+
+    def _att_db(self, src):
+        import sqlite3
+        db = sqlite3.connect(":memory:")
+        db.execute("CREATE TABLE messages (id TEXT, conversationId TEXT, received_at INTEGER, sent_at INTEGER)")
+        db.execute("CREATE TABLE message_attachments (messageId TEXT, path TEXT, attachmentType TEXT, "
+                   "editHistoryIndex INTEGER)")
+        (src / "attachments.noindex" / "ab").mkdir(parents=True)
+        return db
+
+    def test_deferred_chat_not_reexported_until_attachment_appears(self):
+        import time
+        import sync_export as SE
+        src = self.root / "src"
+        db = self._att_db(src)
+        now = int(time.time() * 1000)
+        db.execute("INSERT INTO messages VALUES ('m1','big',5,?)", (now - 3600_000,))
+        db.execute("INSERT INTO message_attachments VALUES ('m1','ab/f1','attachment',-1)")
+        cur = db.cursor()
+        un = SE.unavailable(cur, src, now - 86400_000)
+        self.assertEqual(un, {"big": [("m1", now - 3600_000)]})
+        fp = {"big": "1:5:1"}
+        wm = {"big": ("1:5:1", 1, un["big"])}
+        ready = lambda c, pend: SE.pending_ready(cur, src, pend, now)  # noqa: E731
+        self.assertEqual(SE.select_cids(fp, wm, ready), set())        # file still missing: skip the chat
+        (src / "attachments.noindex" / "ab" / "f1").write_bytes(b"x")
+        self.assertEqual(SE.select_cids(fp, wm, ready), {"big"})      # downloaded now: re-export
+        self.assertEqual(SE.unavailable(cur, src, now - 86400_000), {})
+        # aged past DEFER_DAYS (+margin): re-export so the merge adds it with missing_kind
+        old = [("m1", now - (SE.DEFER_DAYS + 2) * 86400_000)]
+        (src / "attachments.noindex" / "ab" / "f1").unlink()
+        self.assertTrue(SE.pending_ready(cur, src, old, now))
+        self.assertFalse(SE.pending_ready(cur, src, [("m1", now - 3600_000)], now))
+        self.assertTrue(SE.pending_ready(cur, src, None, now))        # pre-0.1.50 watermark row
+        self.assertTrue(SE.pending_ready(cur, src, [("gone", now)], now))  # message deleted
+
+    def test_watermarks_keep_pending_for_chats_not_exported(self):
+        import sync_export as SE
+        st = self.out / "_state"
+        st.mkdir(parents=True, exist_ok=True)
+        (st / S.WATERMARKS).write_text("#last_full\t5\nbig\t1:5:1\t1\tm1@100\nx\t1:1:1\t0\n", encoding="utf-8")
+        tmp = self.root / "tmp"
+        tmp.mkdir()
+        (tmp / "_fingerprints.tsv").write_text("big\t1:5:1\nx\t2:2:2\nn\t1:9:9\n", encoding="utf-8")
+        (tmp / "_selected.tsv").write_text("n\nx\n", encoding="utf-8")
+        (tmp / "_unavail.tsv").write_text("n\tm9@200\n", encoding="utf-8")
+        S.write_watermarks(st, tmp, set(), {"n": 1}, False)
+        wm = SE.read_watermarks(st / S.WATERMARKS)
+        self.assertEqual(wm["big"], ("1:5:1", 1, [("m1", 100)]))
+        self.assertEqual(wm["x"], ("2:2:2", 0, None))
+        self.assertEqual(wm["n"], ("1:9:9", 1, [("m9", 200)]))
+
+    def test_cid_filter_cursor_filters_messages_query_in_sql(self):
+        import sqlite3
+        import sync_export as SE
+        db = sqlite3.connect(":memory:")
+        db.execute("CREATE TABLE messages (conversationId TEXT, json TEXT, sent_at INTEGER)")
+        db.executemany("INSERT INTO messages VALUES (?,?,?)", [("a", "{}", 1), ("b", "BROKEN", 2), ("a", "{}", 3)])
+        cur = SE.CidFilterCursor(db.cursor(), {"a"})
+        cur.execute("SELECT\n conversationId,\n json\n FROM messages\n \n ORDER BY sent_at\n")
+        rows = list(cur)
+        self.assertEqual([r[0] for r in rows], ["a", "a"])  # b never read, so never JSON-parsed
+        cur.execute("SELECT\n conversationId,\n json\n FROM messages\n WHERE sent_at >= 2\n ORDER BY sent_at\n")
+        self.assertEqual(len(list(cur)), 1)
+        self.assertEqual(cur.execute("SELECT COUNT(*) FROM messages").fetchone()[0], 3)
+
+    def test_no_change_run_skips_export(self):
+        st = self.out / "_state"
+        st.mkdir(parents=True, exist_ok=True)
+        (st / S.WATERMARKS).write_text("#last_full\t%d\nc\t1:1:1\t0\n" % int(S.time.time()), encoding="utf-8")
+        calls = []
+        orig = (S.snapshot, S.run_precheck, S.run_export, S.sync)
+        try:
+            S.snapshot = lambda run, q: self.root / "src"
+            S.run_precheck = lambda run, src, pre: calls.append("precheck") or set()
+            S.run_export = lambda *a, **k: calls.append("export")
+            S.sync = lambda *a, **k: calls.append("merge") or 0
+            self.assertEqual(S.main(["--out", str(self.out)]), 0)
+        finally:
+            S.snapshot, S.run_precheck, S.run_export, S.sync = orig
+        self.assertEqual(calls, ["precheck"])
+        status = json.loads((st / "sync_status.json").read_text())
+        self.assertEqual((status["state"], status["message"]), ("done", "no changes"))
 
     def test_fingerprints_from_db(self):
         import sqlite3
@@ -258,7 +341,7 @@ class SyncTest(unittest.TestCase):
         self.assertEqual(S.write_watermarks(st, tmp, {"bad"}, {"def": 1}, True), 2)
         import sync_export as SE
         wm = SE.read_watermarks(st / S.WATERMARKS)
-        self.assertEqual(wm, {"ok": ("1:1:1", 0), "def": ("3:3:3", 1)})  # failed one re-exported next time
+        self.assertEqual(wm, {"ok": ("1:1:1", 0, None), "def": ("3:3:3", 1, [])})  # failed one re-exported next time
         self.assertIsNone(S.want_full_export(st, False))
         self.assertEqual(S.want_full_export(st, True), "--full")
         self.assertEqual(S.want_full_export(st, False, now=S.time.time() + 8 * 86400), "weekly")

@@ -494,8 +494,11 @@ def want_full_export(state: Path, force: bool, now: float | None = None) -> str 
 
 def write_watermarks(state: Path, tmp: Path, failed_cids: set, deferred: dict, was_full: bool) -> int:
     """New watermarks from this run's DB fingerprints (tmp/_fingerprints.tsv). Conversations whose
-    merge failed get no watermark, so the next run exports them again (as if new); deferred
-    counts make the next run retry those chats. Returns the number of rows or -1 if none."""
+    merge failed get no watermark, so the next run exports them again (as if new). A deferred chat
+    keeps its count plus the pending message list (tmp/_unavail.tsv), which the precheck uses to
+    re-export it only once a pending attachment arrives or the message ages out. Chats not exported
+    this run keep their old deferred/pending columns. Returns the number of rows or -1 if none."""
+    import sync_export as SE
     fp_p = tmp / "_fingerprints.tsv"
     if not fp_p.is_file():
         return -1
@@ -506,22 +509,56 @@ def write_watermarks(state: Path, tmp: Path, failed_cids: set, deferred: dict, w
             fp[q[0]] = q[1]
     if not fp:
         return -1
+    sel_p = tmp / "_selected.tsv"
+    selected = SE.read_selected(sel_p) if sel_p.is_file() else None  # None = all exported
+    unavail = {}
+    if (tmp / "_unavail.tsv").is_file():
+        for line in (tmp / "_unavail.tsv").read_text(encoding="utf-8").splitlines():
+            q = line.split("\t")
+            if len(q) == 2:
+                unavail[q[0]] = q[1]
+    old = SE.read_watermarks(state / WATERMARKS)
     meta = read_wm_meta(state)
     last_full = str(int(time.time())) if was_full else meta.get("last_full", "0")
-    rows = [f"#last_full\t{last_full}\n"] + [f"{c}\t{f}\t{deferred.get(c, 0)}\n"
-                                              for c, f in sorted(fp.items()) if c not in failed_cids]
+    rows = [f"#last_full\t{last_full}\n"]
+    for c, f in sorted(fp.items()):
+        if c in failed_cids:
+            continue
+        if selected is not None and c not in selected and c in old:
+            o = old[c]
+            pend = "" if o[2] is None else SE.format_pending(o[2])
+            rows.append(f"{c}\t{f}\t{o[1]}" + (f"\t{pend}" if o[1] and o[2] is not None else "") + "\n")
+            continue
+        n = deferred.get(c, 0)
+        rows.append(f"{c}\t{f}\t{n}" + (f"\t{unavail.get(c, '')}" if n else "") + "\n")
     p = state / WATERMARKS
     D.atomic_write(str(p), "".join(rows))
     return len(rows) - 1
 
 
-def run_export(run: Run, src: Path, tmp: Path, abort_free: float, full: bool = True) -> None:
+def run_precheck(run: Run, src: Path, pre: Path) -> set:
+    """Cheap change check before any sigexport work. Returns the cids to export (empty = none)."""
+    import sync_export as SE
+    shutil.rmtree(pre, ignore_errors=True)
+    env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
+    r = subprocess.run([sigexport_python(), str(HERE / "sync_export.py"), "precheck", str(src),
+                        str(run.state / WATERMARKS), str(pre)], capture_output=True, text=True, env=env)
+    for line in r.stdout.splitlines():
+        if line.startswith("precheck:"):
+            run.log(line)
+    if r.returncode != 0 or not (pre / "_selected.tsv").is_file():
+        raise SystemExit(f"precheck failed rc={r.returncode}")
+    return SE.read_selected(pre / "_selected.tsv") or set()
+
+
+def run_export(run: Run, src: Path, tmp: Path, abort_free: float, full: bool = True,
+               select: Path | None = None) -> None:
     shutil.rmtree(tmp, ignore_errors=True)
     tmp.parent.mkdir(parents=True, exist_ok=True)
     py = sigexport_python()
     env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
     with open(run.state / "sync_sigexport.out", "w", encoding="utf-8") as out:
-        wm = [] if full else ["--watermarks", str(run.state / WATERMARKS)]
+        wm = [] if full or select is None else ["--select", str(select)]
         p = subprocess.Popen([py, str(HERE / "sync_export.py"), "export", str(src), str(tmp), str(run.out), *wm],
                              stdout=out, stderr=subprocess.STDOUT, env=env)
         while True:
@@ -885,10 +922,19 @@ def main(argv=None) -> int:
             run.step("snapshot", 0.05)
             src = snapshot(run, a.quit_signal)
             why = want_full_export(run.state, a.full)
+            pre = out / "_work" / "sync_pre"
+            if not why:
+                run.step("precheck", 0.08)
+                todo = run_precheck(run, src, pre)
+                owed = (out / "_work" / "upload_pending.txt").is_file()
+                if not todo and not (a.upload and owed):
+                    run.log("no changes: export, merge, viewer and upload skipped")
+                    run.end(True, "no changes")
+                    return 0
             run.step("export", 0.1)
             run.log(f"export mode={'full' if why else 'incremental'}" + (f" ({why})" if why else ""))
             tmp = out / "_work" / "sync_tmp"
-            run_export(run, src, tmp, a.abort_free, full=bool(why))
+            run_export(run, src, tmp, a.abort_free, full=bool(why), select=None if why else pre / "_selected.tsv")
         run.step("merge", 0.3)
         rc = sync(run, tmp, a.upload, e("REMOTE"))
         pruned = maybe_prune(run, a.prune_signal_days, a.upload, rc, e("REMOTE"))
