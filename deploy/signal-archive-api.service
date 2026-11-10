@@ -1,0 +1,36 @@
+# Archive host API (tools/archive_server.py) on 127.0.0.1:8766, reached from the tailnet through
+# /opt/signal-web/serve.py (/signal/api, Tailscale-User-Login checked there).
+# Install: cp deploy/signal-archive-api.service /etc/systemd/system/ && systemctl daemon-reload &&
+#          systemctl enable --now signal-archive-api
+# Tokens: /etc/signal-archive/archive_token (Mac sync) and viewer_token (hosted Sync button only),
+#         mode 600, owner signalarchive. rclone config: /etc/signal-archive/rclone.conf.
+[Unit]
+Description=Signal archive API (sigexport-browser archive_server.py)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=signalarchive
+Group=signalarchive
+Environment=ARCHIVE_ROOT=/srv/signal-archive
+Environment=ARCHIVE_TOKEN_FILE=/etc/signal-archive/archive_token
+Environment=ARCHIVE_VIEWER_TOKEN_FILE=/etc/signal-archive/viewer_token
+Environment=ARCHIVE_BIND=127.0.0.1
+Environment=ARCHIVE_PORT=8766
+Environment=REMOTE=jotta:Signal-archive
+Environment=RCLONE_CONFIG=/etc/signal-archive/rclone.conf
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/python3 /opt/sigexport-browser/tools/archive_server.py
+Restart=on-failure
+RestartSec=5
+UMask=0027
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/srv/signal-archive
+ReadOnlyPaths=/etc/signal-archive /opt/sigexport-browser
+
+[Install]
+WantedBy=multi-user.target

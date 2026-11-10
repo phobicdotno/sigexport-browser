@@ -3,6 +3,7 @@
 
   install_sync.py [--out ~/SignalExport] [--remote myremote:Signal-archive] [--port 8765]
                   [--python /opt/homebrew/bin/python3.13] [--lang nb|en] [--rotate-token]
+                  [--archive-url http://host/signal/api --archive-token-file ~/.config/sigexport/archive_token]
   install_sync.py --uninstall [--out ...]
 
 Install does:
@@ -14,6 +15,9 @@ Install does:
      -> sync.py --upload --quit-signal, skipped on battery < 30 %)
      Both are (re)loaded with launchctl bootout/bootstrap gui/$UID.
   4. ~/Applications/Signal Sync.app (osacompile) with a generic icon.
+With --archive-url (archive on another machine, tools/archive_server.py) all three triggers get
+ARCHIVE_URL / ARCHIVE_TOKEN_FILE and run sync.py --upload (the host merges and uploads to Jotta);
+--remote is then not needed. --archive-url '' removes it again.
 Uninstall removes exactly those four things. Neither ever touches the archive itself.
 """
 import argparse
@@ -151,18 +155,33 @@ def install_icon(app, work):
     return r.returncode == 0
 
 
+def sync_env(a):
+    """Environment shared by the helper, the 03:00 job and the Dock app's direct fallback."""
+    env = {"PATH": PATH_ENV}
+    if a.remote:
+        env["REMOTE"] = a.remote
+    if getattr(a, "archive_url", ""):
+        env["ARCHIVE_URL"] = a.archive_url
+        env["ARCHIVE_TOKEN_FILE"] = str(a.archive_token_file)
+    if (a.remote or getattr(a, "archive_url", "")) and a.prune_signal_days > 0:
+        # prune only ever runs after --upload + a passed check (local rclone or the archive host's)
+        env["PRUNE_SIGNAL_DAYS"] = str(a.prune_signal_days)
+    return env
+
+
 def applescript(a, token, lang):
     m = MSG[lang]
     q = lambda s: '"' + str(s).replace("\\", "\\\\").replace('"', '\\"') + '"'
+    up = bool(a.remote or getattr(a, "archive_url", ""))
     qs = lambda s: "'" + str(s).replace("'", "'\\''") + "'"  # shell single-quote
     helper = REPO / "tools" / "sync_helper.py"
     sync_py = REPO / "pipeline" / "sync.py"
     direct = "mkdir -p %s && nohup %s %s --out %s%s >> %s 2>&1 < /dev/null &" % (
-        qs(a.out / "_state"), qs(a.python), qs(sync_py), qs(a.out), " --upload" if a.remote else "",
+        qs(a.out / "_state"), qs(a.python), qs(sync_py), qs(a.out), " --upload" if up else "",
         qs(a.out / "_state" / "sync_launch.log"))
-    if a.remote:
-        direct = "export REMOTE=%s PATH=%s PRUNE_SIGNAL_DAYS=%d; %s" % (
-            qs(a.remote), qs(PATH_ENV), max(0, a.prune_signal_days), direct)
+    if up:
+        ex = " ".join("%s=%s" % (k, qs(v)) for k, v in sorted(sync_env(a).items()))
+        direct = "export %s; %s" % (ex, direct)
     post = "curl -s -m 10 -o /dev/null -w '%%{http_code}' -X POST -H %s http://127.0.0.1:%d/sync || true" % (
         qs("X-Sync-Token: " + token), a.port)
     status = "%s %s --print-status --out %s --since " % (qs(a.python), qs(helper), qs(a.out))
@@ -219,14 +238,13 @@ def install(a):
 
     # 2. helper LaunchAgent
     AGENTS.mkdir(parents=True, exist_ok=True)
-    env = {"PATH": PATH_ENV}
-    if a.remote:
-        env["REMOTE"] = a.remote
-        if a.prune_signal_days > 0:  # prune only ever runs after --upload + rclone check passed
-            env["PRUNE_SIGNAL_DAYS"] = str(a.prune_signal_days)
+    env = sync_env(a)
+    up = bool(a.remote or a.archive_url)
+    if a.archive_url and not Path(a.archive_token_file).is_file():
+        sys.exit("no archive token file at %s (mode 600)" % a.archive_token_file)
     hp = AGENTS / (LABEL_HELPER + ".plist")
     args = [a.python, str(REPO / "tools" / "sync_helper.py"), "--out", str(out), "--port", str(a.port),
-            "--python", a.python, "--sync", str(REPO / "pipeline" / "sync.py")] + (["--upload"] if a.remote else [])
+            "--python", a.python, "--sync", str(REPO / "pipeline" / "sync.py")] + (["--upload"] if up else [])
     hp.write_bytes(plistlib.dumps({
         "Label": LABEL_HELPER, "ProgramArguments": args, "RunAtLoad": True, "KeepAlive": True,
         "ProcessType": "Background", "EnvironmentVariables": env,
@@ -234,7 +252,7 @@ def install(a):
     # 3. daily 03:00 LaunchAgent (missed runs fire once on wake, see man launchd.plist)
     sp = AGENTS / (LABEL_SYNC + ".plist")
     senv = dict(env, OUT=str(out), PY=a.python, SYNC_PY=str(REPO / "pipeline" / "sync.py"),
-                SYNC_ARGS="--upload --quit-signal --full-check" if a.remote else "--quit-signal", MIN_BATTERY=str(a.min_battery))
+                SYNC_ARGS="--upload --quit-signal --full-check" if up else "--quit-signal", MIN_BATTERY=str(a.min_battery))
     sp.write_bytes(plistlib.dumps({
         "Label": LABEL_SYNC, "ProgramArguments": ["/bin/bash", str(REPO / "tools" / "sync_scheduled.sh")],
         "StartCalendarInterval": {"Hour": 3, "Minute": 0}, "ProcessType": "Background",
@@ -259,6 +277,8 @@ def install(a):
     print("  token          %s (mode 600, local only)" % cfg)
     print("  helper         %s -> http://127.0.0.1:%d" % (hp, a.port))
     print("  daily 03:00    %s (%s)" % (sp, senv["SYNC_ARGS"]))
+    if a.archive_url:
+        print("  archive host   %s (token file %s)" % (a.archive_url, a.archive_token_file))
     print("  Dock app       %s%s" % (APP, "" if icon_ok else " (default icon)"))
     print("Next steps:")
     print("  - Reload the viewer (%s/index.html): the Sync button sits next to the title." % viewer)
@@ -314,11 +334,17 @@ def main():
     ap.add_argument("--prune-signal-days", type=int, default=30,
                     help="sync.py PRUNE_SIGNAL_DAYS for the helper, app and 03:00 job (0 = off; needs --remote)")
     ap.add_argument("--rotate-token", action="store_true")
+    ap.add_argument("--archive-url", default=os.environ.get("ARCHIVE_URL", ""),
+                    help="base URL of tools/archive_server.py (archive on another machine); empty = local archive")
+    ap.add_argument("--archive-token-file", default=os.environ.get("ARCHIVE_TOKEN_FILE", "~/.config/sigexport/archive_token"),
+                    help="file (mode 600) with the archive server's Bearer token")
     ap.add_argument("--uninstall", action="store_true")
     a = ap.parse_args()
     if sys.platform != "darwin":
         sys.exit("install_sync.py is macOS only (launchd + osacompile)")
     a.out = Path(a.out).expanduser().resolve()
+    a.archive_url = a.archive_url.strip().rstrip("/")
+    a.archive_token_file = Path(a.archive_token_file).expanduser()
     uninstall(a) if a.uninstall else install(a)
 
 

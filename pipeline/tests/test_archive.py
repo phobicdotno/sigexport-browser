@@ -236,3 +236,34 @@ class ArchiveTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class InstallerArchiveTest(unittest.TestCase):
+    """tools/install_sync.py --archive-url wiring (env + Dock app fallback) and the systemd unit."""
+
+    def args(self, **kw):
+        import types
+        d = dict(out=Path("/tmp/o"), python="/usr/bin/python3", remote="", prune_signal_days=30,
+                 archive_url="http://host/signal/api", archive_token_file=Path("/x/archive_token"), port=8765)
+        d.update(kw)
+        return types.SimpleNamespace(**d)
+
+    def test_env_and_applescript(self):
+        import install_sync as I
+        env = I.sync_env(self.args())
+        self.assertEqual(env["ARCHIVE_URL"], "http://host/signal/api")
+        self.assertEqual(env["ARCHIVE_TOKEN_FILE"], "/x/archive_token")
+        self.assertEqual(env["PRUNE_SIGNAL_DAYS"], "30")
+        self.assertNotIn("REMOTE", env)
+        src = I.applescript(self.args(), "tok", "en")
+        self.assertIn("ARCHIVE_URL=", src)
+        self.assertIn("--upload", src)
+        local = I.sync_env(self.args(archive_url=""))
+        self.assertEqual(set(local), {"PATH"})  # no remote, no archive: no upload, no prune
+        self.assertNotIn("--upload", I.applescript(self.args(archive_url=""), "tok", "en"))
+
+    def test_systemd_unit(self):
+        u = (REPO / "deploy" / "signal-archive-api.service").read_text()
+        for want in ("User=signalarchive", "ARCHIVE_PORT=8766", "ARCHIVE_BIND=127.0.0.1",
+                     "/etc/signal-archive/archive_token", "ReadWritePaths=/srv/signal-archive"):
+            self.assertIn(want, u)
