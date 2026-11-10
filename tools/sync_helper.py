@@ -27,6 +27,9 @@ The helper never syncs by itself: it only launches the sync engine with the fixe
   PYTHON SYNC_PY --out OUT [--upload]
 and reports its status file. Exit code 75 from sync.py means "already running".
 
+With ARCHIVE_URL set (archive on another machine) the helper also polls ARCHIVE_URL/sync-request
+every ARCHIVE_POLL_SECS (45) s and starts a sync when the hosted viewer queued one.
+
 Also usable as a CLI for the Dock app:  sync_helper.py --print-status --out OUT [--since EPOCH]
 prints "state<TAB>added_messages<TAB>new_media<TAB>step<TAB>message" (state "stale" if the status
 file is older than EPOCH).
@@ -437,6 +440,37 @@ def make_handler(out, port, runner, tickets=None):
     return H
 
 
+def poll_archive_once(client, runner):
+    """Archive on another machine: claim a pending sync request from the hosted viewer
+    (ARCHIVE_URL/sync-request) and start a sync. Returns True when one was started."""
+    try:
+        if not client.claim_sync_request():
+            return False
+    except Exception:  # noqa: BLE001  host down: try again next poll
+        return False
+    code, _obj = runner.start()
+    return code == 202
+
+
+def start_archive_poller(runner, url, token_file, every=45):
+    """Background thread: every `every` s claim ARCHIVE_URL/sync-request (sync.py itself reports
+    progress back with POST ARCHIVE_URL/status)."""
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "pipeline"))
+    import archive_client as AC
+
+    def loop():
+        while True:
+            try:
+                client = AC.ArchiveClient(url, AC.read_token_file(token_file or None), timeout=15)
+                poll_archive_once(client, runner)
+            except Exception:  # noqa: BLE001
+                pass
+            time.sleep(every)
+    t = threading.Thread(target=loop, daemon=True)
+    t.start()
+    return t
+
+
 def serve(out, port, runner):
     httpd = ThreadingHTTPServer(("127.0.0.1", port), make_handler(out, port, runner))
     httpd.daemon_threads = True
@@ -470,6 +504,9 @@ def main(argv=None):
         return 0
     runner = Runner(out, a.python, a.sync, a.upload)
     httpd = serve(out, a.port, runner)
+    if os.environ.get("ARCHIVE_URL"):  # sync.py reads ARCHIVE_URL / ARCHIVE_TOKEN_FILE from the env too
+        start_archive_poller(runner, os.environ["ARCHIVE_URL"], os.environ.get("ARCHIVE_TOKEN_FILE"),
+                             int(os.environ.get("ARCHIVE_POLL_SECS", "45")))
     sys.stderr.write("sync helper on http://127.0.0.1:%d (out=%s)\n" % (a.port, out))
     try:
         httpd.serve_forever()

@@ -520,7 +520,7 @@ window.__openChat=openChat;window.__search=function(v){tools(true,true);$('searc
 // The helper only starts pipeline/sync.py; new data appears via the build_stamp auto-refresh below.
 (function(){
   var SC=window.SYNC_CONFIG;if(!SC||!SC.token||!window.fetch)return;
-  var base='http://127.0.0.1:'+(+SC.port||8765),btn=$('syncbtn'),bar=$('syncbar'),timer=null,since=0,seenRun=false,hideT=null;
+  var base=SC.base||('http://127.0.0.1:'+(+SC.port||8765)),btn=$('syncbtn'),bar=$('syncbar'),timer=null,since=0,seenRun=false,hideT=null;
   btn.hidden=false;$('synclog').hidden=false;
   function req(m,p){return fetch(base+p,{method:m,headers:{'X-Sync-Token':SC.token},cache:'no-store'})
     .then(function(r){return r.json().catch(function(){return {}}).then(function(j){return {code:r.status,j:j}})})}
@@ -568,7 +568,7 @@ window.__openChat=openChat;window.__search=function(v){tools(true,true);$('searc
   function poll(){req('GET','/status').then(function(r){downSince=0;retryMs=1000;if(r.code!==200)return fail(r.j.error,r.code);onStatus(r.j)},unreachable)}
   function watch(){if(timer)return;timer=setInterval(poll,2000);poll()}
   function start(){since=Date.now();seenRun=false;show('',T('syncStarting'),0);
-    req('POST','/sync').then(function(r){downSince=0;retryMs=1000;
+    req('POST',SC.syncPath||'/sync').then(function(r){downSince=0;retryMs=1000;
       if(r.code===202)return watch();
       if(r.code===409){show('',T('syncBusy'),0);seenRun=true;return watch()}
       fail(r.j.error,r.code)},function(){pendingStart=true;unreachable()})}

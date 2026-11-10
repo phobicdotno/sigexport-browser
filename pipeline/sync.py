@@ -130,6 +130,7 @@ class Run:
         self.upload_ok = False  # set by sync() only when rclone copy AND check --one-way passed
         self.full_check = False
         self._step_t = None  # (name, start monotonic) of the running step, for step=X secs=Y
+        self.status_hook = None  # archive mode: mirror each status write to ARCHIVE_URL/status
         self.write_status()
 
     def log(self, msg: str) -> None:
@@ -146,6 +147,11 @@ class Run:
             f.flush()
             os.fsync(f.fileno())
         os.replace(tmp, p)
+        if self.status_hook:
+            try:
+                self.status_hook(dict(self.st))
+            except Exception:  # noqa: BLE001  status mirroring is best effort
+                pass
 
     def close_step(self) -> None:
         if self._step_t:
@@ -468,9 +474,16 @@ def snapshot(run: Run, quit_signal: bool) -> Path:
     return work
 
 
+def wm_path(state: Path) -> Path:
+    """The watermarks file: state/sync_watermarks.tsv, or state itself when it is a .tsv path
+    (archive mode keeps a cache of the archive host's watermarks in OUT/_work/)."""
+    state = Path(state)
+    return state if state.suffix == ".tsv" else state / WATERMARKS
+
+
 def read_wm_meta(state: Path) -> dict:
     meta = {}
-    p = state / WATERMARKS
+    p = wm_path(state)
     if p.is_file():
         for line in p.read_text(encoding="utf-8").splitlines():
             q = line.split("\t")
@@ -483,7 +496,7 @@ def want_full_export(state: Path, force: bool, now: float | None = None) -> str 
     """Reason for a full export, or None for an incremental one."""
     if force:
         return "--full"
-    if not (state / WATERMARKS).is_file():
+    if not wm_path(state).is_file():
         return "no watermarks"
     try:
         last = float(read_wm_meta(state).get("last_full", 0))
@@ -554,13 +567,14 @@ def write_watermarks(state: Path, tmp: Path, failed_cids: set, deferred: dict, w
     return len(rows) - 1
 
 
-def run_precheck(run: Run, src: Path, pre: Path) -> set:
-    """Cheap change check before any sigexport work. Returns the cids to export (empty = none)."""
+def run_precheck(run: Run, src: Path, pre: Path, wm: Path | None = None) -> set:
+    """Cheap change check before any sigexport work. Returns the cids to export (empty = none).
+    wm: watermarks file (default OUT/_state/sync_watermarks.tsv; archive mode: the cached remote copy)."""
     import sync_export as SE
     shutil.rmtree(pre, ignore_errors=True)
     env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
     r = subprocess.run([sigexport_python(), str(HERE / "sync_export.py"), "precheck", str(src),
-                        str(run.state / WATERMARKS), str(pre)], capture_output=True, text=True, env=env)
+                        str(wm or run.state / WATERMARKS), str(pre)], capture_output=True, text=True, env=env)
     for line in r.stdout.splitlines():
         if line.startswith("precheck:"):
             run.log(line)
@@ -570,14 +584,17 @@ def run_precheck(run: Run, src: Path, pre: Path) -> set:
 
 
 def run_export(run: Run, src: Path, tmp: Path, abort_free: float, full: bool = True,
-               select: Path | None = None) -> None:
+               select: Path | None = None, archive_local: bool = True) -> None:
+    """archive_local=False (archive on another machine): no OUT argument, so sync_export does not
+    complete conv_map.tsv here; the archive host's merge resolves chats with its own conv_map."""
     shutil.rmtree(tmp, ignore_errors=True)
     tmp.parent.mkdir(parents=True, exist_ok=True)
     py = sigexport_python()
     env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
     with open(run.state / "sync_sigexport.out", "w", encoding="utf-8") as out:
         wm = [] if full or select is None else ["--select", str(select)]
-        p = subprocess.Popen([py, str(HERE / "sync_export.py"), "export", str(src), str(tmp), str(run.out), *wm],
+        p = subprocess.Popen([py, str(HERE / "sync_export.py"), "export", str(src), str(tmp),
+                              *([str(run.out)] if archive_local else []), *wm],
                              stdout=out, stderr=subprocess.STDOUT, env=env)
         while True:
             try:
@@ -683,7 +700,51 @@ def upload_files(run: Run, remote: str, files: list[str], excludes: list[str]) -
 
 
 # ---------------------------------------------------------------- main sync
-def sync(run: Run, tmp: Path, upload: bool, remote: str | None) -> int:
+def upload_list(run: Run, remote: str, files: list[str], excludes: list[str]) -> tuple[int, int]:
+    """Upload + check files (plus the full check when run.full_check). A failed upload's list is kept
+    in _work/upload_pending.txt for the next run. Sets run.upload_ok. Returns (copy rc, check rc)."""
+    out, state = run.out, run.state
+    pend = out / "_work" / "upload_pending.txt"
+    rc, crc = upload_files(run, remote, files, excludes)
+    run.log(f"upload files={len(files)} rc={rc} check rc={crc}")
+    if rc or crc:
+        pend.parent.mkdir(parents=True, exist_ok=True)
+        D.atomic_write(str(pend), "".join(f + "\n" for f in files))
+    else:
+        pend.unlink(missing_ok=True)
+    if run.full_check and not rc and not crc:
+        run.step("full_check", 0.93)
+        ex = [a for e in excludes for a in ("--exclude", e)]
+        with open(state / "upload_check.log", "a") as f:
+            crc = subprocess.run(["rclone", "check", str(out), remote, "--one-way", *ex, "--checkers", "8"],
+                                 stdout=f, stderr=subprocess.STDOUT).returncode
+        run.log(f"full check rc={crc}")
+    run.upload_ok = not rc and not crc
+    return rc, crc
+
+
+def owed_files(out: Path) -> set:
+    pend = out / "_work" / "upload_pending.txt"
+    return set(D.rd(str(pend)).splitlines()) - {""} if pend.is_file() else set()
+
+
+def record_owed(out: Path, files) -> None:
+    """Archive host: add this merge's changed files to _work/upload_pending.txt; POST /upload sends them."""
+    pend = out / "_work" / "upload_pending.txt"
+    pend.parent.mkdir(parents=True, exist_ok=True)
+    D.atomic_write(str(pend), "".join(f + "\n" for f in sorted(owed_files(out) | set(files))))
+
+
+def upload_owed(run: Run, remote: str) -> tuple[int, int]:
+    """Upload what _work/upload_pending.txt lists (files that still exist), with the check."""
+    excludes = load_upload_excludes()
+    is_ex = excluder(excludes)
+    files = sorted(f for f in owed_files(run.out) if not is_ex(f) and (run.out / f).is_file())
+    return upload_list(run, remote, files, excludes)
+
+
+def sync(run: Run, tmp: Path, upload: bool, remote: str | None, record_upload: bool = False) -> int:
+    """record_upload (archive host): no upload here; the changed files go to _work/upload_pending.txt."""
     out, state = run.out, run.state
     cmap = load_conv_map(state)
     owner_of = {t: c for c, ts_ in cmap.items() for t in ts_}
@@ -701,8 +762,8 @@ def sync(run: Run, tmp: Path, upload: bool, remote: str | None) -> int:
             if len(p) == 2:
                 cids.setdefault(p[1], p[0])
     chats = sorted(d for d in tmp.iterdir() if d.is_dir() and (d / "data.json").is_file())
-    excludes = load_upload_excludes() if upload else []
-    tree_before = tree_state(out, excluder(excludes)) if upload and not run.dry else {}
+    excludes = load_upload_excludes() if upload or record_upload else []
+    tree_before = tree_state(out, excluder(excludes)) if (upload or record_upload) and not run.dry else {}
     central = None if run.dry else CM.Central(str(out), str(state), str(out / "_work"))
     nxt = max(used | {0}) + 1
     changed, failed = [], []
@@ -787,32 +848,21 @@ def sync(run: Run, tmp: Path, upload: bool, remote: str | None) -> int:
         n = write_watermarks(state, tmp, failed_cids, deferred_by_cid, was_full, deferred_ts)
         if n >= 0:
             run.log(f"watermarks={n} full={int(was_full)} failed={len(failed_cids)} deferred={len(deferred_by_cid)}")
+    if record_upload and not run.dry:
+        files = changed_files(tree_before, tree_state(out, excluder(excludes)))
+        record_owed(out, files)
+        run.log(f"upload owed files={len(files)}")
     if upload and not run.dry:
         run.step("upload", 0.9)
         if not remote:
             raise SystemExit("--upload needs REMOTE")
-        ex = [a for e in excludes for a in ("--exclude", e)]
         after = tree_state(out, excluder(excludes))
-        pend = out / "_work" / "upload_pending.txt"  # files a failed earlier upload still owes
-        owed = set(D.rd(str(pend)).splitlines()) if pend.is_file() else set()
+        owed = owed_files(out)  # files a failed earlier upload still owes
         files = sorted(set(changed_files(tree_before, after)) | (owed & set(after)))
-        rc, crc = upload_files(run, remote, files, excludes)
-        run.log(f"upload files={len(files)} owed={len(owed)} rc={rc} check rc={crc}")
-        if rc or crc:
-            pend.parent.mkdir(parents=True, exist_ok=True)
-            D.atomic_write(str(pend), "".join(f + "\n" for f in files))
-        else:
-            pend.unlink(missing_ok=True)
-        if run.full_check and not rc and not crc:
-            run.step("full_check", 0.93)
-            with open(state / "upload_check.log", "a") as f:
-                crc = subprocess.run(["rclone", "check", str(out), remote, "--one-way", *ex, "--checkers", "8"],
-                                     stdout=f, stderr=subprocess.STDOUT).returncode
-            run.log(f"full check rc={crc}")
+        run.log(f"upload owed={len(owed)}")
+        rc, crc = upload_list(run, remote, files, excludes)
         if rc or crc:
             failed.append(-2)
-        else:
-            run.upload_ok = True
     return 1 if failed else 0
 
 
@@ -894,6 +944,119 @@ def maybe_prune(run: Run, days: int, upload: bool, sync_rc: int, remote: str | N
     return s
 
 
+# ---------------------------------------------------------------- archive on another machine
+def remote_prune_ok(ingest: dict | None, upload: dict | None) -> bool:
+    """Prune only when the archive host reported a clean merge AND a clean Jotta copy+check of this run."""
+    return bool(ingest and upload and ingest.get("rc") == 0 and ingest.get("run_id")
+                and upload.get("ok") is True and upload.get("run_id") == ingest.get("run_id"))
+
+
+def run_prune_remote(run: Run, days: int, client, run_id: str, token_file: str, dry: bool) -> dict:
+    """prune_signal.py verified against the archive host (its media_index, its archive file md5s and
+    its Jottacloud md5s, refused by the host unless run_id merged and uploaded clean)."""
+    import prepare_source as PS
+    sig = signal_dir()
+    work = run.out / "_work" / "prune_src"
+    shutil.rmtree(work, ignore_errors=True)
+    work.mkdir(parents=True, exist_ok=True)
+    PS.copy_sql_live(sig / "sql", work / "sql")
+    cmd = [sigexport_python(), str(HERE / "prune_signal.py"), "--sql-src", str(work), "--signal-dir", str(sig),
+           "--out", str(run.out), "--days", str(days), "--archive-url", client.url,
+           "--archive-token-file", str(token_file), "--archive-run", run_id] + (["--dry-run"] if dry else [])
+    env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
+    r = subprocess.run(cmd, capture_output=True, text=True, env=env)
+    shutil.rmtree(work, ignore_errors=True)
+    for line in r.stdout.splitlines():
+        if line.startswith("PRUNE_SUMMARY "):
+            return json.loads(line[len("PRUNE_SUMMARY "):])
+    raise RuntimeError(f"prune_signal rc={r.returncode}")
+
+
+def sync_remote(run: Run, a, client, token_file: str) -> int:
+    """Archive mode: snapshot -> precheck against the host's /state -> export changed chats to
+    _work/sync_tmp -> POST /ingest (host merges, rebuilds the viewer, writes watermarks) ->
+    POST /upload (host's Jottacloud copy + check) -> prune only if both were clean for this run."""
+    import archive_client as AC
+    out = run.out
+    work = out / "_work"
+    work.mkdir(parents=True, exist_ok=True)
+    run.step("remote_state", 0.03)
+    st = client.state()
+    wm = work / WATERMARKS  # cache of the host's authoritative watermarks
+    if st.get("watermarks"):
+        D.atomic_write(str(wm), st["watermarks"])
+    else:
+        wm.unlink(missing_ok=True)
+    run.log(f"archive host v{st.get('version', '?')} watermarks={len(st.get('watermarks', '').splitlines())} "
+            f"owed={st.get('upload_owed', 0)}")
+    if a.from_export:
+        tmp, why = Path(a.from_export), "--from-export"
+    else:
+        run.step("snapshot", 0.05)
+        src = snapshot(run, a.quit_signal)
+        why = want_full_export(wm, a.full)
+        pre = work / "sync_pre"
+        if not why:
+            run.step("precheck", 0.08)
+            todo = run_precheck(run, src, pre, wm)
+            if not todo and not (a.upload and st.get("upload_owed")):
+                run.log("no changes: export, ingest and upload skipped")
+                run.remote_msg = "no changes"
+                return 0
+            if not todo:
+                return finish_remote_upload(run, a, client, token_file, {"rc": 0, "run_id": st.get("last_run")})
+        run.step("export", 0.1)
+        run.log(f"export mode={'full' if why else 'incremental'}" + (f" ({why})" if why else ""))
+        tmp = work / "sync_tmp"
+        run_export(run, src, tmp, a.abort_free, full=bool(why), select=None if why else pre / "_selected.tsv",
+                   archive_local=False)
+    run.step("ingest", 0.3)
+    tar = work / "sync_ingest.tar.gz"
+    n = AC.pack(tmp, tar)
+    run.log(f"ingest files={n} bytes={tar.stat().st_size}")
+    try:
+        res = client.ingest(tar)
+    finally:
+        tar.unlink(missing_ok=True)
+    for k in ("added_messages", "new_media", "new_chats", "deferred_messages"):
+        if k in (res.get("status") or {}):
+            run.st[k] = res["status"][k]
+    run.log(f"ingest run={res.get('run_id')} rc={res.get('rc')} message={res.get('message', '')}")
+    if res.get("rc") != 0:
+        run.st["remote_run"] = res.get("run_id")
+        return 1
+    return finish_remote_upload(run, a, client, token_file, res)
+
+
+def finish_remote_upload(run: Run, a, client, token_file: str, ingest: dict) -> int:
+    run.st["remote_run"] = ingest.get("run_id")
+    if not a.upload:
+        return 0
+    if not ingest.get("run_id"):
+        run.log("upload skipped: archive host has no run to upload")
+        return 1
+    run.step("upload", 0.9)
+    up = client.upload(ingest["run_id"], full_check=a.full_check)
+    run.log(f"remote upload run={up.get('run_id')} files={up.get('files')} rc={up.get('rc')} "
+            f"check rc={up.get('check_rc')}")
+    run.upload_ok = remote_prune_ok(ingest, up)
+    if run.upload_ok and a.prune_signal_days and a.prune_signal_days > 0:
+        run.step("prune", 0.95)
+        try:
+            s = run_prune_remote(run, a.prune_signal_days, client, ingest["run_id"], token_file, False)
+        except Exception as ex:  # noqa: BLE001  prune never fails the sync
+            run.log(f"prune failed ({type(ex).__name__}); nothing deleted")
+        else:
+            run.st["pruned_files"], run.st["pruned_bytes"] = int(s.get("pruned_files", 0)), int(s.get("pruned_bytes", 0))
+            run.log(f"prune days={a.prune_signal_days} candidates={s.get('candidates', 0)} "
+                    f"files={run.st['pruned_files']} bytes={run.st['pruned_bytes']} "
+                    f"kept={json.dumps(s.get('kept', {}), sort_keys=True)}")
+            drop_staging(s)
+    elif a.prune_signal_days:
+        run.log("prune skipped: archive host did not report a clean merge and Jotta check for this run")
+    return 0 if run.upload_ok else 1
+
+
 def drop_staging(s) -> None:
     st = (s or {}).get("staging")
     if st and "_work" in Path(st).parts and "pruned" in Path(st).parts:
@@ -935,6 +1098,11 @@ def main(argv=None) -> int:
                          "older than N days that are verified in the archive and on the remote (0 = off)")
     ap.add_argument("--prune-dry-run", action="store_true",
                     help="only report what the prune would delete (read-only, no sync, no upload)")
+    ap.add_argument("--archive-url", default=e("ARCHIVE_URL", ""),
+                    help="archive on another machine: base URL of tools/archive_server.py (env ARCHIVE_URL); "
+                         "the Mac exports, the host merges, rebuilds the viewer and uploads")
+    ap.add_argument("--archive-token-file", default=e("ARCHIVE_TOKEN_FILE", ""),
+                    help="file holding the archive server's Bearer token (default ~/.config/sigexport/archive_token)")
     a = ap.parse_args(argv)
     out = Path(a.out).expanduser().resolve()
     if a.setup_key:
@@ -951,6 +1119,22 @@ def main(argv=None) -> int:
     run.full_check = a.full_check
     pruned = None
     try:
+        if a.archive_url:
+            import archive_client as AC
+            if a.dry_run or a.prune_dry_run:
+                raise SystemExit("--dry-run / --prune-dry-run are local-archive only")
+            tf = a.archive_token_file or str(AC.DEFAULT_TOKEN_FILE)
+            client = AC.ArchiveClient(a.archive_url, AC.read_token_file(tf))
+            run.status_hook = client.post_status
+            if free_gib(out) < a.min_free:
+                raise SystemExit(f"free space below MIN_FREE_GIB={a.min_free}")
+            try:
+                rc = sync_remote(run, a, client, tf)
+            except AC.ArchiveError as ex:
+                raise SystemExit(f"archive host: {ex}")
+            run.end(rc == 0, getattr(run, "remote_msg", "ok") if rc == 0
+                    else "archive host reported a problem, see sync.log")
+            return rc
         if a.prune_dry_run:
             run.step("prune", 0.5)
             pruned = maybe_prune(run, a.prune_signal_days or 30, False, 0, e("REMOTE"), dry=True)

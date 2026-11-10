@@ -260,6 +260,25 @@ One-time key setup for unattended runs (macOS), in Terminal while logged in:
 
 Click **Always Allow** on the "Signal Safe Storage" prompt. This decrypts the SQLCipher key once and stores it in your login Keychain as generic password `sigexport-browser` (account = your user, readable by `/usr/bin/security` without a prompt). The key is passed to sigexport in-process; it is never written to a file or a command line. Unattended runs need the login keychain unlocked (you are logged in; the screen may be locked). To remove: `security delete-generic-password -s sigexport-browser`.
 
+## Archive on another machine (e.g. a home server)
+
+Status: implemented behind a flag, off unless `ARCHIVE_URL` is set. The export still runs on the Mac (Signal Desktop and its DB live there); the archive, the viewer, the authoritative `_state` (watermarks, media_index, conv_map, folders) and the Jottacloud upload live on the host.
+
+On the host (Linux, user `signalarchive`):
+
+```
+python3 tools/archive_server.py --root /srv/signal-archive --token-file /etc/sigexport/archive_token \
+    --viewer-token-file /etc/sigexport/viewer_token --bind 127.0.0.1 --port 8766 --remote jotta:SignalArchive
+```
+
+Bind to 127.0.0.1 behind `tailscale serve` or a reverse proxy, or to the tailnet IP. Token files are mode 600. Every endpoint needs the token; only the static viewer is public on the tailnet.
+
+On the Mac: `ARCHIVE_URL=http://<host>:8766 ARCHIVE_TOKEN_FILE=~/.config/sigexport/archive_token python3 pipeline/sync.py --upload [--prune-signal-days 30]` (or `--archive-url` / `--archive-token-file`). Flow: DB snapshot -> GET /state (watermarks cached in `OUT/_work/sync_watermarks.tsv`) -> precheck -> export changed chats to `OUT/_work/sync_tmp` -> POST /ingest (tar.gz; the host merges append-only with link check and rollback, rebuilds the viewer, writes the watermarks) -> POST /upload (host's rclone copy + check) -> prune Signal Desktop files only if the host reported a clean merge AND a clean Jotta check for that run id. The prune checks every file against the host's media_index, its archive file md5 and its Jotta md5 (`/media_md5`, which the host refuses for an unclean run). Without `ARCHIVE_URL` everything stays local.
+
+Sync button on the hosted viewer: the page served from the host cannot reach the Mac's 127.0.0.1 helper. Put a `viewer/sync_config.js` on the host (never uploaded or ingested) with `window.SYNC_CONFIG={base:'/signal/api',syncPath:'/sync-request',token:'<viewer token>'}`, and have the web server proxy `/signal/api/` to the archive server. The button then POSTs `/sync-request` and polls `/status` on the same origin. The Mac helper (started with `ARCHIVE_URL` in its env) polls `ARCHIVE_URL/sync-request` every 45 s (`ARCHIVE_POLL_SECS`) and starts the sync, and sync.py mirrors its progress to `POST /status`. The viewer token only works for GET /status, GET /log and POST /sync-request.
+
+Note: in archive mode the Mac does not complete `conv_map.tsv` (the archive is not local). New chats are mapped by the host's merge (cid from the export), and existing ones by the host's conv_map.
+
 ## Media layout
 
 Default (`--media-layout central` / `MEDIA_LAYOUT=central`): every unique file lives once in `OUT_DIR/Media/{Pictures,Videos,Audio,Documents}/` under its sigexport name (stickers go to Pictures). When two different files would get the same name, `_<md5[:8]>` goes before the extension. Every chat links to `../../Media/<Type>/<file>` (URL-encoded in `chat.md`/`index.html`, plain in `data.json`), and per-chat `media/` folders are removed. `STATE_DIR/media_index.tsv` maps md5 to `Media/<Type>/<file>`.

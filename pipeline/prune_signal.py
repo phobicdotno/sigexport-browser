@@ -182,8 +182,9 @@ def check_remote(arc: str, md5: str, remote: dict, n: int):
     return True, "ok", n
 
 
-def verify_local(c: dict, att_dir: Path, out: Path, index: dict, md5_cache: dict):
-    """-> (ok, reason, nbytes, arc, md5): every check except the remote one."""
+def verify_local(c: dict, att_dir: Path, out: Path, index: dict, md5_cache: dict, archive=None):
+    """-> (ok, reason, nbytes, arc, md5): every check except the remote one. archive (archive on
+    another machine): callable arc -> md5 of the archive host's file or None, instead of OUT."""
     rel = c["path"]
     if not SAFE_REL.match(rel) or ".." in rel:
         return False, "odd_path", 0, None, None
@@ -208,6 +209,13 @@ def verify_local(c: dict, att_dir: Path, out: Path, index: dict, md5_cache: dict
     arc = index.get(md5)
     if not arc:
         return False, "not_in_index", len(blob), None, None
+    if archive is not None:
+        am = archive(arc)
+        if am is None:
+            return False, "archive_file_missing", len(blob), None, None
+        if am != md5:
+            return False, "archive_md5_mismatch", len(blob), None, None
+        return True, "ok", len(blob), arc, md5
     local = out.joinpath(*arc.split("/"))
     if not local.is_file():
         return False, "archive_file_missing", len(blob), None, None
@@ -219,16 +227,16 @@ def verify_local(c: dict, att_dir: Path, out: Path, index: dict, md5_cache: dict
 
 
 def prune(cur, signal_dir: Path, out: Path, days: int, remote, dry: bool,
-          now_ms: int | None = None, log=lambda s: None) -> dict:
+          now_ms: int | None = None, log=lambda s: None, index=None, archive=None) -> dict:
     now_ms = int(time.time() * 1000) if now_ms is None else now_ms
     att_dir = signal_dir / "attachments.noindex"
     cands = find_candidates(cur, now_ms - int(days) * DAY_MS)
-    index = load_index(out)
+    index = load_index(out) if index is None else index
     stage = out / "_work" / "pruned" / datetime.now().strftime("%Y-%m-%d")
     s = {"days": int(days), "dry_run": bool(dry), "candidates": len(cands), "verified": 0,
          "pruned_files": 0, "pruned_bytes": 0, "kept": {}}
     md5_cache: dict = {}
-    local = [(c, verify_local(c, att_dir, out, index, md5_cache)) for c in cands]
+    local = [(c, verify_local(c, att_dir, out, index, md5_cache, archive)) for c in cands]
     if callable(remote):  # fetch remote md5s only for the archive files the candidates map to
         remote = remote({v[3] for _c, v in local if v[0]})
     remote = {nfc(k): v for k, v in remote.items()}
@@ -258,6 +266,37 @@ def prune(cur, signal_dir: Path, out: Path, days: int, remote, dry: bool,
     return s
 
 
+def prune_against_host(cur, signal_dir: Path, out: Path, days: int, dry: bool, url: str, token_file,
+                       run_id: str, client=None, now_ms=None) -> dict:
+    """Archive on another machine: the index is the host's media_index; each candidate's archive
+    md5 AND Jottacloud md5 come from the host's POST /media_md5, which refuses unless run_id merged
+    and uploaded clean. Any host error -> nothing pruned (the exception propagates)."""
+    if client is None:
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        import archive_client as AC  # noqa: E402
+        client = AC.ArchiveClient(url, AC.read_token_file(token_file))
+    if not run_id:
+        raise SystemExit("--archive-run required")
+    index: dict[str, str] = {}
+    for line in client.media_index().splitlines():
+        parts = line.split("\t")
+        if len(parts) == 2 and parts[0]:
+            index.setdefault(parts[0], parts[1])
+    arch: dict = {}
+
+    def archive(arc):  # host archive file md5, one cheap call per new arc (no rclone)
+        k = nfc(arc)
+        if k not in arch:
+            got = client.media_md5(run_id, [arc], remote=False).get("files", {})
+            arch[k] = ({nfc(x): v for x, v in got.items()}.get(k) or {}).get("archive")
+        return arch[k]
+
+    def remote(arcs):  # one batched call: the host's rclone md5sum of just these files on Jottacloud
+        got = client.media_md5(run_id, sorted(arcs), remote=True).get("files", {})
+        return {x: v["remote"] for x, v in got.items() if v.get("remote")}
+    return prune(cur, signal_dir, out, days, remote, dry, now_ms=now_ms, index=index, archive=archive)
+
+
 def open_db(sql_src: Path):
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     import sync_export as SE  # noqa: E402
@@ -274,11 +313,23 @@ def main(argv=None) -> int:
     ap.add_argument("--signal-dir", required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--days", type=int, required=True)
-    ap.add_argument("--remote", required=True)
+    ap.add_argument("--remote", help="rclone remote (local archive); not with --archive-url")
+    ap.add_argument("--archive-url", help="archive on another machine: verify against its media_index, "
+                    "its archive files and its Jottacloud check (tools/archive_server.py)")
+    ap.add_argument("--archive-token-file")
+    ap.add_argument("--archive-run", help="the host run id that merged and uploaded clean")
     ap.add_argument("--dry-run", action="store_true")
     a = ap.parse_args(argv)
     if a.days < 1:
         raise SystemExit("--days must be >= 1")
+    if a.archive_url:
+        cur = open_db(Path(a.sql_src))
+        s = prune_against_host(cur, Path(a.signal_dir), Path(a.out), a.days, a.dry_run,
+                               a.archive_url, a.archive_token_file, a.archive_run)
+        print("PRUNE_SUMMARY " + json.dumps(s, sort_keys=True), flush=True)
+        return 0
+    if not a.remote:
+        raise SystemExit("--remote or --archive-url required")
     cur = open_db(Path(a.sql_src))
     remote = lambda arcs: remote_media_md5s(a.remote, arcs)  # noqa: E731
     s = prune(cur, Path(a.signal_dir), Path(a.out), a.days, remote, a.dry_run)
