@@ -136,6 +136,77 @@ class CentralTest(unittest.TestCase):
         self.assertEqual(CM.verify_order(str(self.root), ["Alpha"]), ["003"])
 
 
+NB, NNB = "\u00a0", "\u202f"
+
+
+class WhitespaceRefTest(unittest.TestCase):
+    """sigexport writes refs with every \\s turned into %20 while the file keeps U+00A0 etc."""
+
+    def setUp(self):
+        self.t = Path(tempfile.mkdtemp())
+        self.root = self.t / "out"
+        self.cd = self.root / "001_A" / "A"
+        (self.cd / "media").mkdir(parents=True)
+        self.state = self.root / "_state"
+        self.state.mkdir(parents=True)
+        (self.state / "media_index.tsv").touch()
+
+    def tearDown(self):
+        shutil.rmtree(self.t, ignore_errors=True)
+
+    def resolves(self, ref, *files):
+        for f in files:
+            (self.cd / "media" / f).write_bytes(f.encode("utf-8"))
+        return CM._resolves(str(self.root), CM._targets(str(self.root), str(self.cd), ref))
+
+    def test_nbsp(self):
+        self.assertTrue(self.resolves("./media/a%20b.png", f"a{NB}b.png"))
+
+    def test_nnbsp(self):
+        self.assertTrue(self.resolves("./media/a%20b.png", f"a{NNB}b.png"))
+
+    def test_tab(self):
+        self.assertTrue(self.resolves("./media/a%20b.png", "a\tb.png"))
+
+    def test_normal_space_still_resolves(self):
+        self.assertTrue(self.resolves("./media/a%20b.png", "a b.png"))
+
+    def test_exact_name_preferred(self):
+        (self.cd / "media" / "a b.png").write_bytes(b"1")
+        (self.cd / "media" / f"a{NB}b.png").write_bytes(b"2")
+        t = CM._targets(str(self.root), str(self.cd), "./media/a%20b.png")
+        self.assertNotIn(f"001_A/A/media/a{NB}b.png", t)
+
+    def test_ambiguous_variants_not_guessed(self):
+        self.assertFalse(self.resolves("./media/a%20b.png", f"a{NB}b.png", f"a{NNB}b.png"))
+
+    def test_missing_file_still_unresolved(self):
+        self.assertFalse(self.resolves("./media/a%20b.png", "other.png"))
+
+    def test_missing_dir_no_crash(self):
+        self.assertFalse(self.resolves("./nodir/a%20b.png"))
+
+    def test_percent_in_name(self):
+        self.assertTrue(self.resolves("./media/50%%20off.png", f"50%{NB}off.png"))
+
+    def test_already_encoded_literal_name(self):
+        self.assertTrue(self.resolves("./media/a%20b.png", "a%20b.png"))
+
+    def test_run_centralises_nbsp_file_and_rewrites_refs(self):
+        nm = f"shot{NB}PM.png"
+        (self.cd / "media" / nm).write_bytes(b"img")
+        (self.cd / "chat.md").write_text("[2026-01-01 10:00] T: ![s](./media/shot%20PM.png)  \n", encoding="utf-8")
+        (self.cd / "index.html").write_text('<img src="./media/shot%20PM.png">\n', encoding="utf-8")
+        (self.cd / "data.json").write_text(json.dumps({"date": "2026-01-01 10:00", "body": "", "attachments": [
+            {"name": nm, "path": "media/" + nm}]}, ensure_ascii=False) + "\n", encoding="utf-8")
+        res = CM.Central(str(self.root), str(self.state)).run("001_A")
+        self.assertEqual(res["moved"], 1)
+        self.assertTrue((self.root / "Media/Pictures" / nm).is_file())
+        self.assertIn("](../../Media/Pictures/shot%C2%A0PM.png)", (self.cd / "chat.md").read_text(encoding="utf-8"))
+        self.assertIn('src="../../Media/Pictures/shot%C2%A0PM.png"', (self.cd / "index.html").read_text(encoding="utf-8"))
+        self.assertIn("../../Media/Pictures/" + nm, (self.cd / "data.json").read_text(encoding="utf-8"))
+
+
 class DiskGuardTest(unittest.TestCase):
     def setUp(self):
         self.t = Path(tempfile.mkdtemp())

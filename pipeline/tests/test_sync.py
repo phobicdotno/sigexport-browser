@@ -276,7 +276,7 @@ class SyncTest(unittest.TestCase):
         items = [("a", 1_000_000), ("b", 2_000_000), ("c", 3_000_500)]
         self.assertEqual(S.match_pending(items, [3_000.0]), [("c", 3_000_500)])
         self.assertEqual(S.match_pending(items, []), items)          # no times: keep all
-        self.assertEqual(S.match_pending(items, [99_999.0]), items)  # no match: keep all (safe)
+        self.assertEqual(S.match_pending(items, [99_999.0]), [])     # no match: nothing pending
 
     def test_watermarks_keep_pending_for_chats_not_exported(self):
         import sync_export as SE
@@ -531,6 +531,173 @@ class SyncTest(unittest.TestCase):
         got = sorted(str(p.relative_to(dest)).replace(os.sep, "/") for p in dest.rglob("*") if p.is_file())
         self.assertEqual(got, sorted(files))
         self.assertFalse((dest / "viewer" / "sync_config.js").exists())
+
+
+NB, NNB = "\u00a0", "\u202f"
+
+
+class WhitespaceNameAttachmentTest(unittest.TestCase):
+    """sigexport keeps U+00A0 (and other non-ASCII whitespace) in the file name on disk but writes
+    re.sub(r"\\s", "%20", path) into data.json, so path no longer names the file; name does."""
+
+    def setUp(self):
+        self.td = tempfile.TemporaryDirectory()
+        self.src = Path(self.td.name) / "src" / "A"
+        (self.src / "media").mkdir(parents=True)
+        self.now = __import__("time").time()
+        self.recent = __import__("time").strftime("%Y-%m-%dT%H:%M:%S.000000",
+                                                  __import__("time").localtime(self.now - 3600))
+
+    def tearDown(self):
+        self.td.cleanup()
+
+    def plan(self, name, path, on_disk=None, date=None):
+        if on_disk is not None:
+            (self.src / "media" / on_disk).write_bytes(b"p")
+        write_chat(self.src, [msg(date or self.recent, "A", "pic",
+                                  attachments=[{"name": name, "path": path, "missing_kind": None}])])
+        return S.plan_chat(self.src, None, now=self.now)
+
+    def added_att(self, plan):
+        self.assertEqual(len(plan["add"]), 1)
+        return plan["add"][0][2]["attachments"][0]
+
+    # ---- attachment_rel: the on-disk relpath of an attachment, or None
+    def test_rel_plain_path_exists(self):
+        (self.src / "media" / "a_b.png").write_bytes(b"p")
+        self.assertEqual(S.attachment_rel(self.src, {"name": "a_b.png", "path": "media/a_b.png"}), "media/a_b.png")
+
+    def test_rel_nbsp_falls_back_to_name(self):
+        (self.src / "media" / f"a{NB}b.png").write_bytes(b"p")
+        self.assertEqual(S.attachment_rel(self.src, {"name": f"a{NB}b.png", "path": "media/a%20b.png"}),
+                         f"media/a{NB}b.png")
+
+    def test_rel_nnbsp_and_tab(self):
+        for nm, enc in ((f"x{NNB}y.png", "x%20y.png"), ("t\tu.png", "t%20u.png")):
+            (self.src / "media" / nm).write_bytes(b"p")
+            self.assertEqual(S.attachment_rel(self.src, {"name": nm, "path": "media/" + enc}), "media/" + nm)
+
+    def test_rel_missing_file_is_none(self):
+        self.assertIsNone(S.attachment_rel(self.src, {"name": f"a{NB}b.png", "path": "media/a%20b.png"}))
+
+    def test_rel_name_must_match_path(self):
+        (self.src / "media" / "other.png").write_bytes(b"p")
+        self.assertIsNone(S.attachment_rel(self.src, {"name": "other.png", "path": "media/a%20b.png"}))
+
+    def test_rel_name_with_separator_or_dotdot_refused(self):
+        (self.src / "x.png").write_bytes(b"p")
+        for nm in ("../x.png", "sub/x.png", "..\\x.png", "..", ""):
+            self.assertIsNone(S.attachment_rel(self.src, {"name": nm, "path": "media/nope.png"}), nm)
+
+    def test_rel_already_encoded_name_used_as_is(self):
+        (self.src / "media" / "a%20b.png").write_bytes(b"p")  # a literal %20 in the real name
+        self.assertEqual(S.attachment_rel(self.src, {"name": "a%20b.png", "path": "media/a%20b.png"}),
+                         "media/a%20b.png")
+
+    def test_rel_percent_and_nbsp(self):
+        nm = f"50%{NB}off.png"
+        (self.src / "media" / nm).write_bytes(b"p")
+        self.assertEqual(S.attachment_rel(self.src, {"name": nm, "path": "media/50%%20off.png"}), "media/" + nm)
+
+    def test_rel_backslash_path_and_double_whitespace(self):
+        nm = f"a{NB}{NB}b.png"
+        (self.src / "media" / nm).write_bytes(b"p")
+        self.assertEqual(S.attachment_rel(self.src, {"name": nm, "path": "media\\a%20%20b.png"}), "media/" + nm)
+
+    def test_rel_no_path_or_missing_kind(self):
+        self.assertIsNone(S.attachment_rel(self.src, {"name": "x.png", "path": ""}))
+        self.assertIsNone(S.attachment_rel(self.src, {"name": "x.png"}))
+
+    # ---- plan_chat
+    def test_plan_nbsp_attachment_added_not_deferred(self):
+        nm = f"Screenshot 2026-10-11 at 10.00.00{NB}AM.png".replace(" ", "_")
+        p = self.plan(nm, "media/" + nm.replace(NB, "%20"), on_disk=nm)
+        self.assertEqual(p["deferred"], 0)
+        a = self.added_att(p)
+        self.assertEqual(a["path"], "media/" + nm)  # data.json paths are plain, like the rest of the archive
+        self.assertIsNone(a["missing_kind"])
+        self.assertEqual(p["media"], ["media/" + nm])
+
+    def test_plan_nnbsp_and_tab_attachments_added(self):
+        for nm in (f"v{NNB}w.png", "tab\tname.png"):
+            p = self.plan(nm, "media/" + nm.replace(NNB, "%20").replace("\t", "%20"), on_disk=nm)
+            self.assertEqual((p["deferred"], self.added_att(p)["path"], p["media"]), (0, "media/" + nm, ["media/" + nm]))
+
+    def test_plan_normal_path_unchanged(self):
+        p = self.plan("a_b.png", "media/a_b.png", on_disk="a_b.png")
+        self.assertEqual((p["deferred"], self.added_att(p)["path"], p["media"]), (0, "media/a_b.png", ["media/a_b.png"]))
+
+    def test_plan_missing_recent_still_deferred(self):
+        p = self.plan(f"a{NB}b.png", "media/a%20b.png")
+        self.assertEqual((p["deferred"], p["add"], p["media"]), (1, [], []))
+
+    def test_plan_missing_old_still_flagged(self):
+        p = self.plan(f"a{NB}b.png", "media/a%20b.png", date="2020-05-01T09:00:00.000000")
+        a = self.added_att(p)
+        self.assertEqual((a["missing_kind"], a["path"], p["media"]), ("absent_at_sync", "media/a%20b.png", []))
+
+    def test_plan_mismatched_name_still_deferred(self):
+        (self.src / "media" / "unrelated.png").write_bytes(b"p")
+        p = self.plan("unrelated.png", "media/a%20b.png")
+        self.assertEqual(p["deferred"], 1)
+
+    def test_sync_end_to_end_nbsp_file_lands_in_central_media(self):
+        out, exp = Path(self.td.name) / "OUT", Path(self.td.name) / "exp"
+        (out / "_state").mkdir(parents=True)
+        write_chat(out / "001_A" / "A", [msg("2026-01-01T10:00:00.000000", "A", "one")])
+        (out / "_state" / "folders.tsv").write_text("1\tA\tA\n", encoding="utf-8")
+        (out / "_state" / "id_map.tsv").write_text("", encoding="utf-8")
+        nm = f"shot{NB}PM.png"
+        m = msg(self.recent, "A", "pic", attachments=[{"name": nm, "path": "media/shot%20PM.png", "missing_kind": None}])
+        write_chat(exp / "A", [msg("2026-01-01T10:00:00.000000", "A", "one"), m])
+        with open(exp / "A" / "chat.md", "a", encoding="utf-8") as f:
+            f.write("![shot](./media/shot%20PM.png)  \n\n")
+        (exp / "A" / "media").mkdir()
+        (exp / "A" / "media" / nm).write_bytes(b"pic")
+        self.assertEqual(S.main(["--out", str(out), "--from-export", str(exp), "--min-free", "0"]), 0)
+        st = json.loads((out / "_state" / "sync_status.json").read_text())
+        self.assertEqual((st["state"], st["added_messages"], st.get("deferred_messages", 0)), ("done", 1, 0))
+        self.assertTrue((out / "Media" / "Pictures" / nm).is_file())
+        lines = (out / "001_A" / "A" / "data.json").read_text(encoding="utf-8").splitlines()
+        self.assertEqual(json.loads(lines[-1])["attachments"][0]["path"], "../../Media/Pictures/" + nm)
+        self.assertIn("](../../Media/Pictures/shot%C2%A0PM.png)",
+                      (out / "001_A" / "A" / "chat.md").read_text(encoding="utf-8"))
+        self.assertEqual(S.linkcheck(out / "001_A"), set())
+
+
+class MatchPendingTest(unittest.TestCase):
+    items = [("a", 1_000_000), ("b", 2_000_000), ("c", 3_000_500)]
+
+    def test_exact_match(self):
+        self.assertEqual(S.match_pending(self.items, [2_000.0]), [("b", 2_000_000)])
+
+    def test_nearest_within_tolerance(self):
+        self.assertEqual(S.match_pending(self.items, [3_100.0]), [("c", 3_000_500)])
+
+    def test_no_match_returns_empty(self):
+        self.assertEqual(S.match_pending(self.items, [99_999.0]), [])
+
+    def test_many_unrelated_candidates_none_matching(self):
+        many = [(f"m{i}", 1_760_000_000_000 + i * 60_000) for i in range(96)]
+        self.assertEqual(S.match_pending(many, [1_700_000_000.0]), [])
+
+    def test_just_outside_tolerance(self):
+        self.assertEqual(S.match_pending(self.items, [1_000 - 600.001]), [])
+
+    def test_at_tolerance_boundary(self):
+        self.assertEqual(S.match_pending(self.items, [1_000 - 600.0]), [("a", 1_000_000)])
+
+    def test_some_times_match_some_do_not(self):
+        self.assertEqual(S.match_pending(self.items, [99_999.0, 1_000.0]), [("a", 1_000_000)])
+
+    def test_same_best_not_duplicated(self):
+        self.assertEqual(S.match_pending(self.items, [2_000.0, 2_001.0]), [("b", 2_000_000)])
+
+    def test_no_items(self):
+        self.assertEqual(S.match_pending([], [1_000.0]), [])
+
+    def test_no_times_keeps_all(self):
+        self.assertEqual(S.match_pending(self.items, []), self.items)
 
 
 if __name__ == "__main__":

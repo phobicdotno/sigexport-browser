@@ -363,6 +363,40 @@ def nnn_dirs(out: Path) -> dict[int, Path]:
 
 
 # ---------------------------------------------------------------- per-chat merge
+def attachment_rel(src_inner: Path, a: dict) -> str | None:
+    """The relpath (inside src_inner) of an attachment's file, or None if it is not there. path
+    first; else the file called a["name"] next to where path points, if path is sigexport's
+    whitespace-mangled form of that name (U+00A0 etc. written as %20, see CM.ws_same)."""
+    path = (a.get("path") or "") if isinstance(a, dict) else ""
+    if not path:
+        return None
+    if (src_inner / path).is_file():
+        return path
+    name = a.get("name") or ""
+    if not name or "/" in name or "\\" in name or name in (".", ".."):
+        return None
+    d, _, base = path.replace("\\", "/").rpartition("/")
+    if ".." in d.split("/") or not CM.ws_same(name, base):
+        return None
+    rel = f"{d}/{name}" if d else name
+    return rel if (src_inner / rel).is_file() else None
+
+
+def with_found_paths(src_inner: Path, m: dict) -> dict:
+    """m with each attachment path that only resolves through its name (attachment_rel) set to the
+    real on-disk relpath; data.json paths are plain file paths, as everywhere in the archive."""
+    atts = m.get("attachments") or []
+    fixed = []
+    for a in atts:
+        if isinstance(a, dict) and a.get("path") and not a.get("missing_kind") \
+                and not a["path"].startswith("../"):
+            rel = attachment_rel(src_inner, a)
+            if rel and rel != a["path"]:
+                a = {**a, "path": rel}
+        fixed.append(a)
+    return {**m, "attachments": fixed} if fixed != atts else m
+
+
 def plan_chat(src_inner: Path, dst_inner: Path | None, now: float | None = None) -> dict:
     """Returns {'add': [(ts, line, msg)], 'md': [(ts, block)], 'media': [rel paths], 'deferred': n}."""
     new = read_jsonl(src_inner / "data.json")
@@ -373,6 +407,7 @@ def plan_chat(src_inner: Path, dst_inner: Path | None, now: float | None = None)
     md, media, lines, deferred, deferred_ts = [], [], [], 0, []
     now = time.time() if now is None else now
     for m in add:
+        m = with_found_paths(src_inner, m)
         absent = [a for a in m.get("attachments") or [] if isinstance(a, dict) and a.get("path")
                   and not a.get("missing_kind") and not a["path"].startswith("../")
                   and not (src_inner / a["path"]).is_file()]
@@ -509,8 +544,9 @@ def want_full_export(state: Path, force: bool, now: float | None = None) -> str 
 
 def match_pending(items: list, times: list, tol: float = 600.0) -> list:
     """Keep the pending candidates (msgid, sent_at ms) that are the nearest match (within tol s) of a
-    deferred message's timestamp (sigexport's date = min(sent_at, serverTimestamp)). No times or no
-    match: all candidates (safe: a resolvable one still triggers the re-export)."""
+    deferred message's timestamp (sigexport's date = min(sent_at, serverTimestamp)). No times: all
+    candidates. No match: none (keeping all once parked ~100 unrelated messages; an empty list
+    leaves the retry to the weekly full export)."""
     if not times:
         return items
     keep = []
@@ -518,7 +554,7 @@ def match_pending(items: list, times: list, tol: float = 600.0) -> list:
         best = min(items, key=lambda it: abs(it[1] / 1000 - t), default=None)
         if best is not None and abs(best[1] / 1000 - t) <= tol and best not in keep:
             keep.append(best)
-    return keep or items
+    return keep
 
 
 def write_watermarks(state: Path, tmp: Path, failed_cids: set, deferred: dict, was_full: bool,

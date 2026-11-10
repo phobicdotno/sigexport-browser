@@ -1,5 +1,8 @@
 # Changelog
 
+## v0.1.57 (build 32) — 2026-11-10
+- Screenshots and other attachments with odd spaces in their file names now sync instead of getting stuck as waiting and later showing up as missing; chats no longer keep re-checking messages that have nothing to wait for.
+
 ## v0.1.56 (build 31) — 2026-11-10
 - CI fix + tests: `test_env_and_applescript` compared ARCHIVE_TOKEN_FILE to a POSIX string and failed on Windows (`\x\archive_token`); it now compares to `str(Path(...))`. New sync-side test: `sync_export.export` (fake sigexport, made-up names) writes `_cids.tsv` as cid / folder name / real Signal name, with emoji and spaces kept and tabs/newlines flattened. Archive host (outside the repo): `/opt/signal-web/serve.py` serves `sync_config.js` only at exactly `viewer/sync_config.js` (Tailscale-User-Login check unchanged), and the hosted viewer's `sync_config.js` (base `/signal/api`, syncPath `/sync-request`, limited viewer token) is excluded from the host's Jotta backup via `viewer/sync_config.js` in upload_excludes.txt and never copied by viewer updates.
 

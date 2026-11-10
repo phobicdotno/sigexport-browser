@@ -113,8 +113,30 @@ def _enc(rel, key):
     return html.escape(q, quote=True) if key == 'html' else q
 
 
-def _targets(root, cd, ref):
-    """Candidate relpaths (from root, '/'-separated) a ref points to: raw, then URL-decoded."""
+_WS = re.compile(r'\s')
+
+
+def ws_same(disk_name, ref_name):
+    """True if ref_name is how sigexport refers to the file disk_name. sigexport keeps U+00A0 (and
+    other non-ASCII whitespace) in the file name but writes re.sub(r"\\s", "%20", path) into its
+    refs, and %20 decodes to a plain space, so neither the raw nor the URL-decoded ref names the file."""
+    return _WS.sub('%20', disk_name) == ref_name or \
+        _WS.sub(' ', disk_name) == _WS.sub(' ', unquote(ref_name))
+
+
+def ws_variant(names, ref_name):
+    """The one name in names that ref_name refers to modulo whitespace (see ws_same), else None.
+    Only looked for when the decoded ref has whitespace; never guesses between several."""
+    if not _WS.search(unquote(ref_name)):
+        return None
+    hits = sorted({n for n in names if ws_same(n, ref_name)})
+    return hits[0] if len(hits) == 1 else None
+
+
+def _targets(root, cd, ref, known=()):
+    """Candidate relpaths (from root, '/'-separated) a ref points to: raw, then URL-decoded, then
+    (when none of those is a file) the file that differs only in whitespace (ws_variant), looked
+    for on disk and among known relpaths (the journal's sources, already moved by rewrite time)."""
     if not ref or ref.startswith('#') or re.match(r'^[a-zA-Z][a-zA-Z0-9+.-]*:', ref):
         return []
     r = ref.replace('\\', '/')
@@ -124,6 +146,16 @@ def _targets(root, cd, ref):
         rel = D.posix_rel(a, root)
         if rel not in out:
             out.append(rel)
+    d, _, base = r.split('#')[0].rpartition('/')
+    if _WS.search(unquote(base)) and not _resolves(root, out):
+        adir = os.path.normpath(os.path.join(cd, *d.split('/'))) if d else cd
+        drel = D.posix_rel(adir, root)
+        names = [k.rpartition('/')[2] for k in known if k.rpartition('/')[0] == drel]
+        if os.path.isdir(adir):
+            names += [f for f in os.listdir(adir) if os.path.isfile(os.path.join(adir, f))]
+        hit = ws_variant(names, base)
+        if hit:
+            out.append(drel + '/' + hit)
     return out
 
 
@@ -153,7 +185,8 @@ def rewrite_chat(root: str, cd: str, mapping: dict) -> int:
 
         def cb(mo):
             nonlocal n
-            hit = next((x for x in _targets(root, cd, _dec(mo.group(1), key)) if x in mapping), None)
+            hit = next((x for x in _targets(root, cd, _dec(mo.group(1), key), mapping) if x in mapping),
+                       None)
             if not hit:
                 return mo.group(0)
             n += 1
@@ -307,7 +340,7 @@ class Central:
                 fp = os.path.join(cd, fname)
                 if os.path.exists(fp):
                     for mo in rx.finditer(D.rd(fp)):
-                        if any(x in mapping for x in _targets(self.root, cd, _dec(mo.group(1), key))):
+                        if any(x in mapping for x in _targets(self.root, cd, _dec(mo.group(1), key), mapping)):
                             local += 1
         if broke or local:
             raise CentralError(f'link check: broken={broke} still_local={local}')
