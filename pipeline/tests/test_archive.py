@@ -252,7 +252,7 @@ class InstallerArchiveTest(unittest.TestCase):
         import install_sync as I
         env = I.sync_env(self.args())
         self.assertEqual(env["ARCHIVE_URL"], "http://host/signal/api")
-        self.assertEqual(env["ARCHIVE_TOKEN_FILE"], "/x/archive_token")
+        self.assertEqual(env["ARCHIVE_TOKEN_FILE"], str(Path("/x/archive_token")))  # backslashes on Windows
         self.assertEqual(env["PRUNE_SIGNAL_DAYS"], "30")
         self.assertNotIn("REMOTE", env)
         src = I.applescript(self.args(), "tok", "en")

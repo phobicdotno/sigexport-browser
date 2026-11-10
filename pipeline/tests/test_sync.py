@@ -366,6 +366,46 @@ class SyncTest(unittest.TestCase):
         r = subprocess.run([node, "-e", code], capture_output=True, text=True)
         self.assertEqual(json.loads(r.stdout), [True, False, False, True])
 
+    def test_export_writes_real_name_as_third_cids_column(self):
+        """sync_export.export: _cids.tsv = cid <TAB> sigexport folder name <TAB> real Signal name
+        (taken before fix_names strips spaces/emoji; tabs/newlines flattened). Made-up names, fake sigexport."""
+        import types
+        from unittest import mock
+        import sync_export as SE
+
+        class C:
+            def __init__(self, name):
+                self.name = name
+
+        def fix_names(contacts):  # like sigexport: alnum only
+            return {k: C("".join(ch for ch in (c.name or "") if ch.isalnum())) for k, c in contacts.items()}
+
+        utils = types.ModuleType("sigexport.utils")
+        utils.fix_names = fix_names
+        data = types.ModuleType("sigexport.data")
+        data.fetch_data = lambda *a, **k: ({}, {})
+        smain = types.ModuleType("sigexport.main")
+
+        def cli():
+            utils.fix_names({"c1": C("Jane Q. Example \U0001F600"), "c2": C("Tab\tName\nTest"),
+                             "c3": C("Plain")})
+            raise SystemExit(0)
+        smain.cli = cli
+        pkg = types.ModuleType("sigexport")
+        pkg.utils, pkg.data, pkg.main = utils, data, smain
+        mods = {"sigexport": pkg, "sigexport.utils": utils, "sigexport.data": data, "sigexport.main": smain}
+        dest = self.root / "cids_exp"
+        argv = list(sys.argv)
+        try:
+            with mock.patch.dict(sys.modules, mods), mock.patch.object(SE, "stored_key", lambda: None):
+                self.assertEqual(SE.export(str(self.root / "src"), str(dest)), 0)
+        finally:
+            sys.argv = argv
+        rows = [ln.split("\t") for ln in (dest / "_cids.tsv").read_text(encoding="utf-8").splitlines()]
+        self.assertEqual(sorted(rows), [["c1", "JaneQExample", "Jane Q. Example \U0001F600"],
+                                        ["c2", "TabNameTest", "Tab Name Test"],
+                                        ["c3", "Plain", "Plain"]])
+
     def test_fingerprints_from_db(self):
         import sqlite3
         import sync_export as SE

@@ -1,5 +1,8 @@
 # Changelog
 
+## v0.1.56 (build 31) — 2026-11-10
+- CI fix + tests: `test_env_and_applescript` compared ARCHIVE_TOKEN_FILE to a POSIX string and failed on Windows (`\x\archive_token`); it now compares to `str(Path(...))`. New sync-side test: `sync_export.export` (fake sigexport, made-up names) writes `_cids.tsv` as cid / folder name / real Signal name, with emoji and spaces kept and tabs/newlines flattened. Archive host (outside the repo): `/opt/signal-web/serve.py` serves `sync_config.js` only at exactly `viewer/sync_config.js` (Tailscale-User-Login check unchanged), and the hosted viewer's `sync_config.js` (base `/signal/api`, syncPath `/sync-request`, limited viewer token) is excluded from the host's Jotta backup via `viewer/sync_config.js` in upload_excludes.txt and never copied by viewer updates.
+
 ## v0.1.55 (build 30) — 2026-11-10
 - Real chat names in the viewer: sigexport's `fix_names` names each chat folder `''.join(alnum of emoji.demojize(name))`, so the chat list, sender names and search index showed e.g. `JaneredheartDoe` (emoji turned into words, spaces dropped). `build_viewer.py` now takes the real Signal name from `_state/chats.txt` (line N = chat NNN) and `_state/folders.tsv`, strips Signal's bidi isolates, and uses it when its folder key matches the chat folder (or it is the only chat in `NNN_<safe name>`); senders and reactors with that folder name get it too; folders and media paths are unchanged. `sync_export.py` writes the real name as a 3rd `_cids.tsv` column and `sync.py` stores it in `folders.tsv` for new chats. Test with made-up names.
 
