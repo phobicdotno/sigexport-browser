@@ -165,6 +165,7 @@ class WhitespaceRefTest(unittest.TestCase):
     def test_nnbsp(self):
         self.assertTrue(self.resolves("./media/a%20b.png", f"a{NNB}b.png"))
 
+    @unittest.skipIf(os.name == "nt", "Windows file names cannot hold a tab")
     def test_tab(self):
         self.assertTrue(self.resolves("./media/a%20b.png", "a\tb.png"))
 

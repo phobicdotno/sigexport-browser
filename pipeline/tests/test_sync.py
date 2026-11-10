@@ -573,7 +573,7 @@ class WhitespaceNameAttachmentTest(unittest.TestCase):
                          f"media/a{NB}b.png")
 
     def test_rel_nnbsp_and_tab(self):
-        for nm, enc in ((f"x{NNB}y.png", "x%20y.png"), ("t\tu.png", "t%20u.png")):
+        for nm, enc in ((f"x{NNB}y.png", "x%20y.png"), ("t\tu.png", "t%20u.png"))[:1 if os.name == "nt" else 2]:
             (self.src / "media" / nm).write_bytes(b"p")
             self.assertEqual(S.attachment_rel(self.src, {"name": nm, "path": "media/" + enc}), "media/" + nm)
 
@@ -619,7 +619,7 @@ class WhitespaceNameAttachmentTest(unittest.TestCase):
         self.assertEqual(p["media"], ["media/" + nm])
 
     def test_plan_nnbsp_and_tab_attachments_added(self):
-        for nm in (f"v{NNB}w.png", "tab\tname.png"):
+        for nm in (f"v{NNB}w.png", "tab\tname.png")[:1 if os.name == "nt" else 2]:  # no tab in Windows names
             p = self.plan(nm, "media/" + nm.replace(NNB, "%20").replace("\t", "%20"), on_disk=nm)
             self.assertEqual((p["deferred"], self.added_att(p)["path"], p["media"]), (0, "media/" + nm, ["media/" + nm]))
 

@@ -1,5 +1,8 @@
 # Changelog
 
+## v0.1.58 (build 33) — 2026-11-10
+- Test fix for Windows, which does not allow tabs in file names.
+
 ## v0.1.57 (build 32) — 2026-11-10
 - Screenshots and other attachments with odd spaces in their file names now sync instead of getting stuck as waiting and later showing up as missing; chats no longer keep re-checking messages that have nothing to wait for.
 
