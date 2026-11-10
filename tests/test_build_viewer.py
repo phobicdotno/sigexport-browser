@@ -44,6 +44,39 @@ class BuildViewerTest(unittest.TestCase):
         stamp = (self.out / 'build_stamp.js').read_text(encoding='utf-8')
         self.assertIn('window.__VIEWER_VERSION="%s";' % v, stamp)
         self.assertRegex(stamp, r"__BUILD_TIME='\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d'")
+    def test_real_chat_names_with_emoji_and_spaces(self):
+        """sigexport names the chat folder 'JaneredheartDoe'; the viewer shows the real name."""
+        def chat(top, sub, sender):
+            d = self.root / top / sub
+            d.mkdir(parents=True)
+            (d / 'data.json').write_text(json.dumps({'date': '2024-01-02T03:04:05', 'sender': sender,
+                                                     'body': 'hi', 'reactions': [[sender, 'x']]}) + '\n',
+                                         encoding='utf-8')
+        chat('301_Jane_Doe', 'JaneredheartDoe', 'JaneredheartDoe')
+        chat('302_Bob', 'BobSmith', 'BobSmith')
+        chat('302_Bob', 'Bob', 'Bob')
+        chat('303_Other', 'NoMatch', 'NoMatch')
+        st = self.root / '_state'
+        st.mkdir(exist_ok=True)
+        lines = [''] * 303
+        lines[300] = '\u2068Jane \u2764\ufe0f Doe\u2069'
+        lines[301] = 'Bob'
+        lines[302] = 'Somebody Else'
+        (st / 'chats.txt').write_text('\n'.join(lines) + '\n', encoding='utf-8')
+        (st / 'folders.tsv').write_text('302\tBob Smith\tBobSmith\n', encoding='utf-8')
+        self.build()
+        names = {c['name'] for c in payload((self.out / 'index_data.js').read_text(encoding='utf-8'))}
+        self.assertIn('Jane \u2764\ufe0f Doe', names)
+        self.assertIn('Bob Smith', names)
+        self.assertIn('Bob', names)
+        self.assertIn('NoMatch', names)  # no safe name match -> folder name kept
+        self.assertNotIn('JaneredheartDoe', names)
+        jane = [c for c in self.chats().values() if c['dir'] == '301_Jane_Doe/JaneredheartDoe'][0]
+        self.assertEqual(jane['messages'][0]['s'], 'Jane \u2764\ufe0f Doe')
+        self.assertEqual(jane['messages'][0]['r'][0][0], 'Jane \u2764\ufe0f Doe')
+        srch = ''.join(f.read_text(encoding='utf-8') for f in (self.out / 'search').glob('*.js'))
+        self.assertNotIn('redheart', srch)
+
     def chats(self):
         res = {}
         for f in sorted((self.out / 'data').glob('*.js')):

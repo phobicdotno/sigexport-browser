@@ -1,5 +1,8 @@
 # Changelog
 
+## v0.1.55 (build 30) — 2026-11-10
+- Real chat names in the viewer: sigexport's `fix_names` names each chat folder `''.join(alnum of emoji.demojize(name))`, so the chat list, sender names and search index showed e.g. `JaneredheartDoe` (emoji turned into words, spaces dropped). `build_viewer.py` now takes the real Signal name from `_state/chats.txt` (line N = chat NNN) and `_state/folders.tsv`, strips Signal's bidi isolates, and uses it when its folder key matches the chat folder (or it is the only chat in `NNN_<safe name>`); senders and reactors with that folder name get it too; folders and media paths are unchanged. `sync_export.py` writes the real name as a 3rd `_cids.tsv` column and `sync.py` stores it in `folders.tsv` for new chats. Test with made-up names.
+
 ## v0.1.54 (build 30) — 2026-11-10
 - Archive host deployment: `tools/install_sync.py --archive-url URL [--archive-token-file F]` gives the helper, the 03:00 job and the Dock app's direct fallback ARCHIVE_URL / ARCHIVE_TOKEN_FILE and `--upload` (the host merges and uploads; `--remote` not needed; prune still gated on the host's clean merge + Jotta check); new `deploy/signal-archive-api.service` (archive_server.py as signalarchive on 127.0.0.1:8766, tokens in /etc/signal-archive mode 600, RCLONE_CONFIG there, ProtectSystem=strict with only /srv/signal-archive writable); tests for the installer env/AppleScript and the unit
 

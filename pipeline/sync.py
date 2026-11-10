@@ -755,12 +755,14 @@ def sync(run: Run, tmp: Path, upload: bool, remote: str | None, record_upload: b
             if sd.is_dir() and (sd / "data.json").is_file():
                 subs.setdefault(sd.name, []).append((d.name, sd.name))
     used = set(dirs)
-    cids = {}
+    cids, real = {}, {}
     if (tmp / "_cids.tsv").exists():
         for line in D.rd(str(tmp / "_cids.tsv")).splitlines():
             p = line.split("\t")
-            if len(p) == 2:
+            if len(p) in (2, 3):  # cid, folder name[, real Signal name]
                 cids.setdefault(p[1], p[0])
+                if len(p) == 3 and p[2]:
+                    real.setdefault(p[1], p[2])
     chats = sorted(d for d in tmp.iterdir() if d.is_dir() and (d / "data.json").is_file())
     excludes = load_upload_excludes() if upload or record_upload else []
     tree_before = tree_state(out, excluder(excludes)) if (upload or record_upload) and not run.dry else {}
@@ -818,7 +820,7 @@ def sync(run: Run, tmp: Path, upload: bool, remote: str | None, record_upload: b
                 with open(state / "conv_map.tsv", "a", encoding="utf-8") as f:
                     f.write(f"{cid}\t{top}\t{dst_inner.name}\n")
                 with open(state / "folders.tsv", "a", encoding="utf-8") as f:
-                    f.write(f"{idx}\t{name}\t{dst_inner.name}\n")
+                    f.write(f"{idx}\t{real.get(name) or name}\t{dst_inner.name}\n")
                 dirs[idx] = out / top
             changed.append(top)
             shutil.rmtree(backup, ignore_errors=True)

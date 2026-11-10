@@ -334,7 +334,7 @@ def export(src, dest, out=None, select_path=None, full=True):
     import sigexport.data as data
     import sigexport.main as smain
     import sigexport.utils as utils
-    mapping, captured = {}, {}
+    mapping, captured, real = {}, {}, {}
     _fix, _fetch = utils.fix_names, data.fetch_data
     sel = None if (full or not select_path) else read_selected(select_path)
     if sel is not None and not sel:
@@ -371,6 +371,8 @@ def export(src, dest, out=None, select_path=None, full=True):
     data.fetch_data = fetch_record
 
     def fix_record(contacts):
+        for cid, c in contacts.items():  # real Signal name, before fix_names strips spaces/emoji
+            real[cid] = (c.name or "").replace("\t", " ").replace("\n", " ")
         out = _fix(contacts)
         for cid, c in out.items():
             mapping[cid] = c.name
@@ -401,9 +403,9 @@ def export(src, dest, out=None, select_path=None, full=True):
             for cid, items in sorted((captured.get("unavail") or {}).items()):
                 f.write(f"{cid}\t{format_pending(items)}\n")
         with open(Path(dest) / "_cids.tsv", "w", encoding="utf-8") as f:
-            for cid, name in mapping.items():
+            for cid, name in mapping.items():  # cid <TAB> folder name <TAB> real Signal name
                 if name:
-                    f.write(f"{cid}\t{name}\n")
+                    f.write(f"{cid}\t{name}\t{real.get(cid) or name}\n")
     if out and rc == 0:
         update_conv_map(out, {n: c for c, n in mapping.items() if n}, captured.get("convos"))
     return rc

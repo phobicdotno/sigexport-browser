@@ -21,6 +21,74 @@ def norm(s):
     return ''.join(c for c in unicodedata.normalize('NFKD', s) if not unicodedata.combining(c))
 
 
+BIDI = dict.fromkeys(map(ord, '\u200e\u200f\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069'))
+
+
+def clean_name(s):
+    """Signal wraps names in bidi isolates (U+2068..U+2069); drop those, keep emoji and spaces."""
+    return ' '.join((s or '').translate(BIDI).split())
+
+
+def fixed_key(s):
+    """Key comparable to sigexport's folder name: ''.join(alnum of emoji.demojize(name)).
+    Without the emoji package, emoji are simply dropped (then only the fallback rules match)."""
+    try:
+        import emoji
+        s = emoji.demojize(s)
+    except Exception:
+        pass
+    return ''.join(c for c in s if c.isalnum())
+
+
+def safe_top(name):
+    """platform_util.safe_component: how the NNN_<name> top folder was made from the real name."""
+    return re.sub(r'[^A-Za-z0-9]+', '_', name)[:40]
+
+
+def real_names(root, dirs):
+    """{chat dir: real Signal name} from ROOT/_state/chats.txt (line N = chat NNN) and
+    _state/folders.tsv (NNN <TAB> name <TAB> folder|folder). sigexport names the chat folder
+    with emoji turned into words and spaces dropped; the viewer shows the real name instead.
+    A name is used when its folder key matches the chat folder, or when it is the only chat
+    in NNN_<x> and <x> is that name's safe folder form. Otherwise the folder name stays."""
+    st = root / '_state'
+    cands = {}
+    try:
+        for i, line in enumerate((st / 'chats.txt').read_text(encoding='utf-8').splitlines(), 1):
+            if line.strip():
+                cands.setdefault(i, []).append(clean_name(line))
+    except OSError:
+        pass
+    try:
+        for line in (st / 'folders.tsv').read_text(encoding='utf-8').splitlines():
+            q = line.split('\t')
+            if len(q) >= 2 and q[0].strip().isdigit() and q[1].strip():
+                cands.setdefault(int(q[0]), []).append(clean_name(q[1]))
+    except OSError:
+        pass
+    per_top = {}
+    for d in dirs:
+        per_top.setdefault(d.split('/')[0], []).append(d)
+    res = {}
+    for d in dirs:
+        if '/' not in d:
+            continue
+        top, sub = d.split('/', 1)
+        m = re.match(r'^(\d+)_(.*)$', top)
+        if not m:
+            continue
+        names = cands.get(int(m.group(1)), [])
+        hit = next((x for x in names if x and fixed_key(x) == sub), None)
+        if hit is None:
+            base = re.sub(r'\d+$', '', sub)
+            hit = next((x for x in names if x and base and fixed_key(x) == base), None)
+        if hit is None and len(per_top[top]) == 1:
+            hit = next((x for x in names if x and safe_top(x) == m.group(2)), None)
+        if hit:
+            res[d] = hit
+    return res
+
+
 LINKRE = re.compile(r'https?://\S+')
 TBIT = {'image': 1, 'video': 2, 'audio': 4, 'file': 8}
 
@@ -169,6 +237,9 @@ def main():
         tmp[sd].mkdir()
     sbytes = 0
     dirs = find_chats(root, out)
+    realn = real_names(root, dirs)
+    # sender / reactor names are folder names too (1:1 chats: the chat's own folder name)
+    smap = {d.split('/')[-1]: n for d, n in realn.items()}
     index, nmsg, nmedia, unres, skipped = [], 0, 0, 0, 0
     for d in dirs:
         cd = root.joinpath(*d.split('/'))
@@ -208,15 +279,17 @@ def main():
                 if not ok:
                     unres += 1
             sender = m.get('sender') or ''
+            sender = smap.get(sender, sender)
             kind = ''
             if m.get('deleted'): kind = 'deleted'
             elif m.get('call'): kind = 'missed call' if m.get('missed') else 'call'
             msgs.append({'t': ts, 'd': m.get('date') or '', 's': sender, 'o': sender == 'Me',
                          'b': m.get('body') or '', 'q': clean_quote(m.get('quote')),
-                         'r': [x for x in (m.get('reactions') or []) if isinstance(x, (list, tuple))],
+                         'r': [[smap.get(x[0], x[0])] + list(x[1:]) if x and isinstance(x[0], str) else x
+                               for x in (m.get('reactions') or []) if isinstance(x, (list, tuple))],
                          'a': atts, 'k': kind})
         msgs.sort(key=lambda x: x['t'])
-        name = d.split('/')[-1] if '/' in d else re.sub(r'^\d+_', '', d)
+        name = realn.get(d) or (d.split('/')[-1] if '/' in d else re.sub(r'^\d+_', '', d))
         senders = sorted({x['s'] for x in msgs if not x['o'] and x['s']})
         chat = {'id': n, 'dir': d, 'name': name, 'group': len(senders) > 1, 'messages': msgs}
         with open(tmp['data'] / ('%d.js' % n), 'w', encoding='utf-8', newline='\n') as f:
